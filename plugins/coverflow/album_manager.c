@@ -75,13 +75,14 @@ album_add_track_index (coverflow_album_t *al, int track_idx) {
     al->track_indices[al->track_count++] = track_idx;
 }
 
-static coverflow_album_t *
+static int
 album_manager_add_album (album_manager_t *mgr, const char *key, const char *artist, const char *album, const char *year, DB_playItem_t *rep_track) {
     if (mgr->count >= mgr->capacity) {
         mgr->capacity = mgr->capacity < 16 ? 16 : mgr->capacity * 2;
         mgr->albums = realloc (mgr->albums, mgr->capacity * sizeof (coverflow_album_t));
     }
-    coverflow_album_t *al = &mgr->albums[mgr->count++];
+    int idx = mgr->count++;
+    coverflow_album_t *al = &mgr->albums[idx];
     memset (al, 0, sizeof (*al));
     al->album_key = strdup (key);
     al->artist = strdup (artist ? artist : "Unknown Artist");
@@ -91,7 +92,7 @@ album_manager_add_album (album_manager_t *mgr, const char *key, const char *arti
     if (rep_track) {
         deadbeef->pl_item_ref (rep_track);
     }
-    return al;
+    return idx;
 }
 
 void
@@ -162,13 +163,16 @@ album_manager_rebuild (album_manager_t *mgr, ddb_playlist_t *plt) {
         char key_buf[512];
         snprintf (key_buf, sizeof (key_buf), "%s||%s", artist, album);
 
-        coverflow_album_t *target_album = g_hash_table_lookup (album_map, key_buf);
-        if (!target_album) {
-            target_album = album_manager_add_album (mgr, key_buf, artist, album, year, it);
-            g_hash_table_insert (album_map, strdup (key_buf), target_album);
+        gpointer val = NULL;
+        int target_idx = -1;
+        if (g_hash_table_lookup_extended (album_map, key_buf, NULL, &val)) {
+            target_idx = GPOINTER_TO_INT (val);
+        } else {
+            target_idx = album_manager_add_album (mgr, key_buf, artist, album, year, it);
+            g_hash_table_insert (album_map, strdup (key_buf), GINT_TO_POINTER (target_idx));
         }
 
-        album_add_track_index (target_album, i);
+        album_add_track_index (&mgr->albums[target_idx], i);
 
         deadbeef->pl_item_unref (it);
     }
