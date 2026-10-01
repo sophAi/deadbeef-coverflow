@@ -97,6 +97,9 @@ mkdir -p "${STAGING_DIR}/DEBIAN"
 
 # Copy runtime base into /opt/deadbeef-coverflow to avoid any conflict
 cp -a "${BASE_SRC}/deadbeef" "${STAGING_DIR}/opt/${PACKAGE_NAME}/"
+if [ -f "${BASE_SRC}/deadbeef.png" ]; then
+    cp -a "${BASE_SRC}/deadbeef.png" "${STAGING_DIR}/opt/${PACKAGE_NAME}/"
+fi
 cp -a "${BASE_SRC}/lib" "${STAGING_DIR}/opt/${PACKAGE_NAME}/"
 cp -a "${BASE_SRC}/plugins" "${STAGING_DIR}/opt/${PACKAGE_NAME}/"
 cp -a "${BASE_SRC}/pixmaps" "${STAGING_DIR}/opt/${PACKAGE_NAME}/"
@@ -112,6 +115,7 @@ cp -f "${COVERFLOW_SO}" "${STAGING_DIR}/opt/${PACKAGE_NAME}/plugins/coverflow_gt
 cat << EOF > "${STAGING_DIR}/usr/bin/${PACKAGE_NAME}"
 #!/bin/sh
 # DeaDBeeF Cover Flow launcher with default GTK3 (GtkGLArea / Cover Flow support)
+export DEADBEEF_PLUGIN_DIR="/opt/${PACKAGE_NAME}/plugins"
 export LD_LIBRARY_PATH="/opt/${PACKAGE_NAME}/lib:\${LD_LIBRARY_PATH:-}"
 exec /opt/${PACKAGE_NAME}/deadbeef --gui GTK3 "\$@"
 EOF
