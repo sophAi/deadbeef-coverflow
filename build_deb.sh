@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # DeaDBeeF Cover Flow - Debian (.deb) Packaging Script
+# 
+# Builds and packages DeaDBeeF with Cover Flow into 'deadbeef-coverflow'
+# to prevent any conflicts with the system's official 'deadbeef' package.
 # Target: Linux Mint 22.3 / Ubuntu 24.04 (noble, amd64)
 # ==============================================================================
 
@@ -86,59 +89,63 @@ echo "Using DeaDBeeF base from: ${BASE_SRC}"
 # --- 5. Prepare Staging Directory ---
 echo "[4/6] Preparing staging directory: ${STAGING_DIR}..."
 rm -rf "${STAGING_DIR}"
-mkdir -p "${STAGING_DIR}/opt/deadbeef"
+mkdir -p "${STAGING_DIR}/opt/${PACKAGE_NAME}"
 mkdir -p "${STAGING_DIR}/usr/bin"
 mkdir -p "${STAGING_DIR}/usr/share/applications"
 mkdir -p "${STAGING_DIR}/usr/share/pixmaps"
 mkdir -p "${STAGING_DIR}/DEBIAN"
 
-# Copy runtime base
-cp -a "${BASE_SRC}/deadbeef" "${STAGING_DIR}/opt/deadbeef/"
-cp -a "${BASE_SRC}/lib" "${STAGING_DIR}/opt/deadbeef/"
-cp -a "${BASE_SRC}/plugins" "${STAGING_DIR}/opt/deadbeef/"
-cp -a "${BASE_SRC}/pixmaps" "${STAGING_DIR}/opt/deadbeef/"
-cp -a "${BASE_SRC}/locale" "${STAGING_DIR}/opt/deadbeef/"
+# Copy runtime base into /opt/deadbeef-coverflow to avoid any conflict
+cp -a "${BASE_SRC}/deadbeef" "${STAGING_DIR}/opt/${PACKAGE_NAME}/"
+cp -a "${BASE_SRC}/lib" "${STAGING_DIR}/opt/${PACKAGE_NAME}/"
+cp -a "${BASE_SRC}/plugins" "${STAGING_DIR}/opt/${PACKAGE_NAME}/"
+cp -a "${BASE_SRC}/pixmaps" "${STAGING_DIR}/opt/${PACKAGE_NAME}/"
+cp -a "${BASE_SRC}/locale" "${STAGING_DIR}/opt/${PACKAGE_NAME}/"
 if [ -d "${BASE_SRC}/doc" ]; then
-    cp -a "${BASE_SRC}/doc" "${STAGING_DIR}/opt/deadbeef/"
+    cp -a "${BASE_SRC}/doc" "${STAGING_DIR}/opt/${PACKAGE_NAME}/"
 fi
 
 # Copy newly built Cover Flow plugin
-cp -f "${COVERFLOW_SO}" "${STAGING_DIR}/opt/deadbeef/plugins/coverflow_gtk3.so"
+cp -f "${COVERFLOW_SO}" "${STAGING_DIR}/opt/${PACKAGE_NAME}/plugins/coverflow_gtk3.so"
 
-# Create /usr/bin/deadbeef launcher script with GTK3 default
-cat << 'EOF' > "${STAGING_DIR}/usr/bin/deadbeef"
+# Create /usr/bin/deadbeef-coverflow launcher script with GTK3 default
+cat << EOF > "${STAGING_DIR}/usr/bin/${PACKAGE_NAME}"
 #!/bin/sh
-# DeaDBeeF launcher with default GTK3 (GtkGLArea / Cover Flow support)
-export LD_LIBRARY_PATH="/opt/deadbeef/lib:${LD_LIBRARY_PATH:-}"
-exec /opt/deadbeef/deadbeef --gui GTK3 "$@"
+# DeaDBeeF Cover Flow launcher with default GTK3 (GtkGLArea / Cover Flow support)
+export LD_LIBRARY_PATH="/opt/${PACKAGE_NAME}/lib:\${LD_LIBRARY_PATH:-}"
+exec /opt/${PACKAGE_NAME}/deadbeef --gui GTK3 "\$@"
 EOF
-chmod 0755 "${STAGING_DIR}/usr/bin/deadbeef"
+chmod 0755 "${STAGING_DIR}/usr/bin/${PACKAGE_NAME}"
 
-# Install Desktop file
-cp "${SCRIPT_DIR}/deadbeef.desktop" "${STAGING_DIR}/usr/share/applications/"
+# Install Desktop file as deadbeef-coverflow.desktop
+cp "${SCRIPT_DIR}/deadbeef-coverflow.desktop" "${STAGING_DIR}/usr/share/applications/"
 
-# Install Pixmap and Icons
+# Install Pixmap and Icons named deadbeef-coverflow
 if [ -f "${BASE_SRC}/deadbeef.png" ]; then
-    cp "${BASE_SRC}/deadbeef.png" "${STAGING_DIR}/usr/share/pixmaps/deadbeef.png"
+    cp "${BASE_SRC}/deadbeef.png" "${STAGING_DIR}/usr/share/pixmaps/${PACKAGE_NAME}.png"
 fi
 
 for sz in 16x16 22x22 24x24 32x32 48x48 64x64 128x128 192x192 256x256; do
     if [ -d "${SCRIPT_DIR}/icons/${sz}" ]; then
         mkdir -p "${STAGING_DIR}/usr/share/icons/hicolor/${sz}/apps"
-        cp -a "${SCRIPT_DIR}/icons/${sz}/"* "${STAGING_DIR}/usr/share/icons/hicolor/${sz}/apps/" 2>/dev/null || true
+        if [ -f "${SCRIPT_DIR}/icons/${sz}/deadbeef.png" ]; then
+            cp "${SCRIPT_DIR}/icons/${sz}/deadbeef.png" "${STAGING_DIR}/usr/share/icons/hicolor/${sz}/apps/${PACKAGE_NAME}.png"
+        fi
     fi
 done
 
 if [ -d "${SCRIPT_DIR}/icons/scalable" ]; then
     mkdir -p "${STAGING_DIR}/usr/share/icons/hicolor/scalable/apps"
-    cp -a "${SCRIPT_DIR}/icons/scalable/"* "${STAGING_DIR}/usr/share/icons/hicolor/scalable/apps/" 2>/dev/null || true
+    if [ -f "${SCRIPT_DIR}/icons/scalable/deadbeef.svg" ]; then
+        cp "${SCRIPT_DIR}/icons/scalable/deadbeef.svg" "${STAGING_DIR}/usr/share/icons/hicolor/scalable/apps/${PACKAGE_NAME}.svg"
+    fi
 fi
 
 # Set standard permissions
 find "${STAGING_DIR}" -type d -exec chmod 0755 {} +
-chmod 0755 "${STAGING_DIR}/opt/deadbeef/deadbeef"
-chmod 0755 "${STAGING_DIR}/opt/deadbeef/plugins/"*.so
-chmod 0755 "${STAGING_DIR}/opt/deadbeef/lib/"*.so*
+chmod 0755 "${STAGING_DIR}/opt/${PACKAGE_NAME}/deadbeef"
+chmod 0755 "${STAGING_DIR}/opt/${PACKAGE_NAME}/plugins/"*.so
+chmod 0755 "${STAGING_DIR}/opt/${PACKAGE_NAME}/lib/"*.so*
 
 # --- 6. Debian Control & Scripts ---
 echo "[5/6] Creating Debian package control files..."
@@ -151,17 +158,14 @@ Architecture: ${ARCH}
 Maintainer: sophAi <clusterga@gmail.com>
 Installed-Size: ${INSTALLED_SIZE}
 Depends: libc6 (>= 2.34), libgtk-3-0t64 (>= 3.24.0) | libgtk-3-0, libepoxy0 (>= 1.4.3), libgl1, libasound2t64 | libasound2, libpulse0, zlib1g
-Provides: deadbeef
-Replaces: deadbeef
-Conflicts: deadbeef
 Section: sound
 Priority: optional
 Homepage: https://github.com/sophAi/deadbeef-coverflow
 Description: DeaDBeeF music player with 3D OpenGL Cover Flow plugin
  DeaDBeeF is a modular, fast, and lightweight audio player.
- This enhanced edition includes a native Mac-like 3D Cover Flow plugin
- hardware-accelerated with OpenGL, supporting embedded MP3 album art,
- smart album grouping, smooth track flipping, and instant playback.
+ This package provides DeaDBeeF with the native 3D OpenGL Cover Flow plugin,
+ installed as '${PACKAGE_NAME}' to allow coexisting alongside any
+ system DeaDBeeF package without conflicts.
 EOF
 
 cat << 'EOF' > "${STAGING_DIR}/DEBIAN/postinst"
@@ -219,5 +223,6 @@ fi
 echo ""
 echo "===================================================================="
 echo " Successfully created: ${OUTPUT_DEB}"
+echo " Command to run: ${PACKAGE_NAME}"
 echo "===================================================================="
 dpkg-deb -I "${OUTPUT_DEB}"
