@@ -43,6 +43,7 @@ typedef struct {
     float current_pos;
     float target_pos;
     guint tick_callback_id;
+    int playlist_version;
 
     /* Interactive drag state */
     gboolean is_dragging;
@@ -116,6 +117,7 @@ update_info_labels (w_coverflow_t *w) {
 
 typedef struct {
     w_coverflow_t *w;
+    int playlist_version;
     int album_index;
     char *image_path;
 } texture_ready_data_t;
@@ -126,29 +128,28 @@ on_texture_ready_in_main_thread (gpointer user_data) {
     w_coverflow_t *w = data->w;
     int idx = data->album_index;
 
-    if (w && idx >= 0 && idx < w->album_mgr.count && w->gl_area && gtk_widget_get_realized (w->gl_area)) {
+    if (w && data->playlist_version == w->playlist_version &&
+        idx >= 0 && idx < w->album_mgr.count) {
         coverflow_album_t *al = &w->album_mgr.albums[idx];
-        gtk_gl_area_make_current (GTK_GL_AREA (w->gl_area));
-
+        if (al->pending_image_path) {
+            free (al->pending_image_path);
+            al->pending_image_path = NULL;
+        }
         if (data->image_path && data->image_path[0]) {
-            int tw = 0, th = 0;
-            GLuint tex = gl_coverflow_load_texture_from_file (data->image_path, &tw, &th);
-            if (tex) {
-                if (al->texture_id) {
-                    gl_coverflow_delete_texture (&al->texture_id);
-                }
-                al->texture_id = tex;
-                al->tex_width = tw;
-                al->tex_height = th;
-            }
+            al->pending_image_path = data->image_path;
+            data->image_path = NULL; /* Transfer ownership */
         }
         al->texture_loaded = TRUE;
         al->is_fetching = FALSE;
 
-        gtk_widget_queue_draw (w->gl_area);
+        if (w->gl_area) {
+            gtk_widget_queue_draw (w->gl_area);
+        }
     }
 
-    free (data->image_path);
+    if (data->image_path) {
+        free (data->image_path);
+    }
     free (data);
     return G_SOURCE_REMOVE;
 }
@@ -167,7 +168,11 @@ on_cover_query_callback (int error, ddb_cover_query_t *query, ddb_cover_info_t *
         }
         g_idle_add (on_texture_ready_in_main_thread, data);
     } else if (query->user_data) {
-        free (query->user_data);
+        texture_ready_data_t *data = (texture_ready_data_t *)query->user_data;
+        if (data->image_path) {
+            free (data->image_path);
+        }
+        free (data);
     }
 
     if (query->track) {
@@ -194,6 +199,7 @@ check_and_fetch_artwork_for_visible_albums (w_coverflow_t *w) {
 
             texture_ready_data_t *tdata = malloc (sizeof (texture_ready_data_t));
             tdata->w = w;
+            tdata->playlist_version = w->playlist_version;
             tdata->album_index = i;
             tdata->image_path = NULL;
 
@@ -246,7 +252,9 @@ on_gl_unrealize (GtkGLArea *area, gpointer user_data) {
     w_coverflow_t *w = (w_coverflow_t *)user_data;
     gtk_gl_area_make_current (area);
     gl_coverflow_cleanup (&w->gl_renderer);
+    album_manager_flush_pending_deletes (&w->album_mgr);
     album_manager_free_textures (&w->album_mgr);
+    album_manager_flush_pending_deletes (&w->album_mgr);
 }
 
 static void
@@ -259,8 +267,34 @@ on_gl_resize (GtkGLArea *area, int width, int height, gpointer user_data) {
 static gboolean
 on_gl_render (GtkGLArea *area, GdkGLContext *context, gpointer user_data) {
     w_coverflow_t *w = (w_coverflow_t *)user_data;
+    if (!w) return FALSE;
 
+    /* 1. Safely flush any deferred texture deletions in active GL context */
+    album_manager_flush_pending_deletes (&w->album_mgr);
+
+    /* 2. Upload any pending album textures */
+    for (int i = 0; i < w->album_mgr.count; i++) {
+        coverflow_album_t *al = &w->album_mgr.albums[i];
+        if (al->pending_image_path) {
+            int tw = 0, th = 0;
+            GLuint tex = gl_coverflow_load_texture_from_file (al->pending_image_path, &tw, &th);
+            if (tex) {
+                if (al->texture_id) {
+                    album_manager_queue_delete_texture (&w->album_mgr, al->texture_id);
+                }
+                al->texture_id = tex;
+                al->tex_width = tw;
+                al->tex_height = th;
+            }
+            free (al->pending_image_path);
+            al->pending_image_path = NULL;
+        }
+    }
+
+    /* 3. Query background artwork for visible albums */
     check_and_fetch_artwork_for_visible_albums (w);
+
+    /* 4. Render 3D Cover Flow */
     gl_coverflow_render (&w->gl_renderer, &w->album_mgr, w->current_pos);
 
     return TRUE;
@@ -332,9 +366,12 @@ on_menu_queue_album (GtkMenuItem *item, gpointer user_data) {
 static void
 on_menu_reload_covers (GtkMenuItem *item, gpointer user_data) {
     w_coverflow_t *w = (w_coverflow_t *)user_data;
-    if (w->gl_area && gtk_widget_get_realized (w->gl_area)) {
-        gtk_gl_area_make_current (GTK_GL_AREA (w->gl_area));
-        album_manager_free_textures (&w->album_mgr);
+    if (w->artwork_plugin && w->artwork_source_id) {
+        w->artwork_plugin->cancel_queries_with_source_id (w->artwork_source_id);
+    }
+    w->playlist_version++;
+    album_manager_free_textures (&w->album_mgr);
+    if (w->gl_area) {
         gtk_widget_queue_draw (w->gl_area);
     }
 }
@@ -486,13 +523,13 @@ w_coverflow_destroy (ddb_gtkui_widget_t *base) {
     w_coverflow_t *w = (w_coverflow_t *)base;
     if (!w) return;
 
-    if (w->artwork_plugin && w->artwork_source_id) {
-        w->artwork_plugin->cancel_queries_with_source_id (w->artwork_source_id);
+    if (w->tick_callback_id && w->gl_area) {
+        gtk_widget_remove_tick_callback (w->gl_area, w->tick_callback_id);
+        w->tick_callback_id = 0;
     }
 
-    if (w->gl_area && gtk_widget_get_realized (w->gl_area)) {
-        gtk_gl_area_make_current (GTK_GL_AREA (w->gl_area));
-        gl_coverflow_cleanup (&w->gl_renderer);
+    if (w->artwork_plugin && w->artwork_source_id) {
+        w->artwork_plugin->cancel_queries_with_source_id (w->artwork_source_id);
     }
 
     album_manager_free (&w->album_mgr);
@@ -509,9 +546,10 @@ w_coverflow_message (ddb_gtkui_widget_t *base, uint32_t id, uintptr_t ctx, uint3
     case DB_EV_PLAYLISTSWITCHED: {
         ddb_playlist_t *plt = deadbeef->plt_get_curr ();
         if (plt) {
-            if (w->gl_area && gtk_widget_get_realized (w->gl_area)) {
-                gtk_gl_area_make_current (GTK_GL_AREA (w->gl_area));
+            if (w->artwork_plugin && w->artwork_source_id) {
+                w->artwork_plugin->cancel_queries_with_source_id (w->artwork_source_id);
             }
+            w->playlist_version++;
             album_manager_rebuild (&w->album_mgr, plt);
             deadbeef->plt_unref (plt);
 

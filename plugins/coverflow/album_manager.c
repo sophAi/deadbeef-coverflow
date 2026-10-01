@@ -17,14 +17,39 @@ album_manager_init (album_manager_t *mgr) {
 }
 
 void
+album_manager_queue_delete_texture (album_manager_t *mgr, GLuint tex_id) {
+    if (!mgr || tex_id == 0) {
+        return;
+    }
+    if (mgr->pending_delete_count >= mgr->pending_delete_capacity) {
+        mgr->pending_delete_capacity = mgr->pending_delete_capacity < 16 ? 16 : mgr->pending_delete_capacity * 2;
+        mgr->pending_delete_textures = realloc (mgr->pending_delete_textures, mgr->pending_delete_capacity * sizeof (GLuint));
+    }
+    mgr->pending_delete_textures[mgr->pending_delete_count++] = tex_id;
+}
+
+void
+album_manager_flush_pending_deletes (album_manager_t *mgr) {
+    if (!mgr || mgr->pending_delete_count <= 0) {
+        return;
+    }
+    glDeleteTextures (mgr->pending_delete_count, mgr->pending_delete_textures);
+    mgr->pending_delete_count = 0;
+}
+
+void
 album_manager_free_textures (album_manager_t *mgr) {
     if (!mgr || !mgr->albums) {
         return;
     }
     for (int i = 0; i < mgr->count; i++) {
         if (mgr->albums[i].texture_id != 0) {
-            glDeleteTextures (1, &mgr->albums[i].texture_id);
+            album_manager_queue_delete_texture (mgr, mgr->albums[i].texture_id);
             mgr->albums[i].texture_id = 0;
+        }
+        if (mgr->albums[i].pending_image_path) {
+            free (mgr->albums[i].pending_image_path);
+            mgr->albums[i].pending_image_path = NULL;
         }
         mgr->albums[i].texture_loaded = FALSE;
         mgr->albums[i].is_fetching = FALSE;
@@ -48,8 +73,12 @@ album_manager_clear (album_manager_t *mgr) {
                 deadbeef->pl_item_unref (al->rep_track);
                 al->rep_track = NULL;
             }
+            if (al->pending_image_path) {
+                free (al->pending_image_path);
+                al->pending_image_path = NULL;
+            }
             if (al->texture_id != 0) {
-                glDeleteTextures (1, &al->texture_id);
+                album_manager_queue_delete_texture (mgr, al->texture_id);
                 al->texture_id = 0;
             }
         }
@@ -64,6 +93,12 @@ album_manager_clear (album_manager_t *mgr) {
 void
 album_manager_free (album_manager_t *mgr) {
     album_manager_clear (mgr);
+    if (mgr->pending_delete_textures) {
+        free (mgr->pending_delete_textures);
+        mgr->pending_delete_textures = NULL;
+    }
+    mgr->pending_delete_count = 0;
+    mgr->pending_delete_capacity = 0;
 }
 
 static void
