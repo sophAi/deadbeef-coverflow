@@ -1,0 +1,47 @@
+# Compiled Object files
+*.o
+*.lo
+*.la
+*.al
+*.so
+*.dylib
+*.dll
+*.a
+
+# Dependency directories and libtool
+.deps/
+.libs/
+libtool
+
+# Autotools generated files (keep Makefile.am, Makefile.in, configure, configure.ac)
+/Makefile
+**/Makefile
+!Makefile.am
+!Makefile.in
+config.log
+config.status
+config.cache
+config.h
+stamp-h1
+autom4te.cache/
+
+# Binaries and executables
+/deadbeef
+/src/deadbeef
+
+# Gettext compiled messages
+*.gmo
+*.mo
+po/*.gmo
+
+# Backup and temp files
+*~
+*.swp
+*.swo
+.DS_Store
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
