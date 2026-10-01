@@ -18,6 +18,7 @@ libtool
 **/Makefile
 !Makefile.am
 !Makefile.in
+!plugins/coverflow/Makefile
 config.log
 config.status
 config.cache
@@ -28,6 +29,7 @@ autom4te.cache/
 # Binaries and executables
 /deadbeef
 /src/deadbeef
+*.deb
 
 # Gettext compiled messages
 *.gmo
