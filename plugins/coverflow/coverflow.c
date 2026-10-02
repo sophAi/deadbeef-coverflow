@@ -391,12 +391,25 @@ on_menu_reload_covers (GtkMenuItem *item, gpointer user_data) {
     }
 }
 
-static void
-apply_dark_theme (int prefer_dark) {
+static int s_current_dark_theme = -1;
+
+static gboolean
+apply_dark_theme_idle (gpointer data) {
+    int prefer_dark = GPOINTER_TO_INT (data);
     GtkSettings *settings = gtk_settings_get_default ();
     if (settings) {
         g_object_set (settings, "gtk-application-prefer-dark-theme", prefer_dark ? TRUE : FALSE, NULL);
     }
+    return G_SOURCE_REMOVE;
+}
+
+static void
+apply_dark_theme (int prefer_dark) {
+    if (s_current_dark_theme == prefer_dark) {
+        return;
+    }
+    s_current_dark_theme = prefer_dark;
+    g_idle_add (apply_dark_theme_idle, GINT_TO_POINTER (prefer_dark));
 }
 
 static void
@@ -655,25 +668,44 @@ w_coverflow_create (void) {
         w->artwork_source_id = w->artwork_plugin->allocate_source_id ();
     }
 
-    /* Container: Vertical GtkBox holding top title label & GLArea */
-    w->container = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+    /* Overlay container: Hosts the GtkGLArea and overlays the album title directly floating above */
+    w->container = gtk_overlay_new ();
     w->base.widget = w->container;
-
-    /* Top Album Label: Positioned right above the 3D cover flow */
-    w->lbl_album = gtk_label_new ("");
-    gtk_label_set_ellipsize (GTK_LABEL (w->lbl_album), PANGO_ELLIPSIZE_END);
-    gtk_widget_set_margin_top (w->lbl_album, 8);
-    gtk_widget_set_margin_bottom (w->lbl_album, 4);
-    gtk_widget_set_margin_start (w->lbl_album, 12);
-    gtk_widget_set_margin_end (w->lbl_album, 12);
-    gtk_box_pack_start (GTK_BOX (w->container), w->lbl_album, FALSE, FALSE, 0);
 
     /* GtkGLArea 3D Viewport: Expands to fill available space */
     w->gl_area = gtk_gl_area_new ();
     gtk_widget_set_can_focus (w->gl_area, TRUE);
     gtk_widget_set_size_request (w->gl_area, 300, 240);
     gtk_gl_area_set_has_depth_buffer (GTK_GL_AREA (w->gl_area), TRUE);
-    gtk_box_pack_start (GTK_BOX (w->container), w->gl_area, TRUE, TRUE, 0);
+    gtk_container_add (GTK_CONTAINER (w->container), w->gl_area);
+
+    /* Album Title Overlay: Floating directly inside the 3D scene above the center album */
+    w->lbl_album = gtk_label_new ("");
+    gtk_label_set_ellipsize (GTK_LABEL (w->lbl_album), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_halign (w->lbl_album, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign (w->lbl_album, GTK_ALIGN_START);
+    gtk_widget_set_margin_top (w->lbl_album, 14);
+    gtk_widget_set_margin_start (w->lbl_album, 20);
+    gtk_widget_set_margin_end (w->lbl_album, 20);
+
+    /* Semi-transparent dark pill background with subtle border and text shadow for legibility */
+    GtkCssProvider *css_provider = gtk_css_provider_new ();
+    gtk_css_provider_load_from_data (css_provider,
+        "label.coverflow-title {"
+        "  color: #ffffff;"
+        "  background-color: rgba(18, 18, 24, 0.72);"
+        "  border: 1px solid rgba(255, 255, 255, 0.12);"
+        "  border-radius: 14px;"
+        "  padding: 4px 16px;"
+        "  text-shadow: 0px 1px 3px rgba(0, 0, 0, 0.9);"
+        "}", -1, NULL);
+    GtkStyleContext *sc = gtk_widget_get_style_context (w->lbl_album);
+    gtk_style_context_add_class (sc, "coverflow-title");
+    gtk_style_context_add_provider (sc, GTK_STYLE_PROVIDER (css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref (css_provider);
+
+    gtk_overlay_add_overlay (GTK_OVERLAY (w->container), w->lbl_album);
+    gtk_overlay_set_overlay_pass_through (GTK_OVERLAY (w->container), w->lbl_album, TRUE);
 
     g_signal_connect (w->gl_area, "destroy", G_CALLBACK (on_gl_area_destroy), w);
 

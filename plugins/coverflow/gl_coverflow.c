@@ -104,6 +104,16 @@ mat4_rotate_y (float *m, float angle_rad) {
     mat4_multiply (m, m, r);
 }
 
+static void
+mat4_scale (float *m, float sx, float sy, float sz) {
+    float s[16];
+    mat4_identity (s);
+    s[0] = sx;
+    s[5] = sy;
+    s[10] = sz;
+    mat4_multiply (m, m, s);
+}
+
 /* ---------------- Shader Sources ---------------- */
 
 static const char *vertex_shader_source =
@@ -342,12 +352,31 @@ gl_coverflow_resize (gl_coverflow_renderer_t *r, int width, int height) {
 
 /* ---------------- Render Single Cover Instance ---------------- */
 
+static inline void
+get_album_aspect_scale (const coverflow_album_t *al, float *out_sx, float *out_sy) {
+    float w = al ? al->tex_width : 0;
+    float h = al ? al->tex_height : 0;
+    if (w > 0.0f && h > 0.0f) {
+        if (w >= h) {
+            *out_sx = 1.0f;
+            *out_sy = h / w;
+        } else {
+            *out_sx = w / h;
+            *out_sy = 1.0f;
+        }
+    } else {
+        *out_sx = 1.0f;
+        *out_sy = 1.0f;
+    }
+}
+
 static void
-draw_cover_quad (gl_coverflow_renderer_t *r, float x, float z, float angle_rad, float tint, GLuint tex_id) {
+draw_cover_quad (gl_coverflow_renderer_t *r, float x, float z, float angle_rad, float tint, GLuint tex_id, float sx, float sy) {
     float model[16];
     mat4_identity (model);
     mat4_translate (model, x, 0.0f, z);
     mat4_rotate_y (model, angle_rad);
+    mat4_scale (model, sx, sy, 1.0f);
 
     glUniformMatrix4fv (r->u_model, 1, GL_FALSE, model);
     glUniform3f (r->u_tint, tint, tint, tint);
@@ -374,7 +403,7 @@ void
 gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float current_pos) {
     if (!r->initialized) return;
 
-    /* Dark subtle gradient background */
+    /* Subtle dark background */
     glClearColor (0.05f, 0.05f, 0.06f, 1.0f);
     glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -428,8 +457,11 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
             tint = 0.72f + 0.28f * t;
         }
 
-        GLuint tex = mgr->albums[i].texture_id ? mgr->albums[i].texture_id : r->default_texture_id;
-        draw_cover_quad (r, x, z, angle, tint, tex);
+        coverflow_album_t *al = &mgr->albums[i];
+        float sx, sy;
+        get_album_aspect_scale (al, &sx, &sy);
+        GLuint tex = al->texture_id ? al->texture_id : r->default_texture_id;
+        draw_cover_quad (r, x, z, angle, tint, tex, sx, sy);
     }
 
     /* 2. Right side covers: from far right inwards */
@@ -451,8 +483,11 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
             tint = 0.72f + 0.28f * t;
         }
 
-        GLuint tex = mgr->albums[i].texture_id ? mgr->albums[i].texture_id : r->default_texture_id;
-        draw_cover_quad (r, x, z, angle, tint, tex);
+        coverflow_album_t *al = &mgr->albums[i];
+        float sx, sy;
+        get_album_aspect_scale (al, &sx, &sy);
+        GLuint tex = al->texture_id ? al->texture_id : r->default_texture_id;
+        draw_cover_quad (r, x, z, angle, tint, tex, sx, sy);
     }
 
     /* 3. Center cover */
@@ -463,8 +498,11 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
         float z = -fabsf (delta) * 0.75f;
         float tint = 1.0f - fabsf (delta) * 0.25f;
 
-        GLuint tex = mgr->albums[center_idx].texture_id ? mgr->albums[center_idx].texture_id : r->default_texture_id;
-        draw_cover_quad (r, x, z, angle, tint, tex);
+        coverflow_album_t *al = &mgr->albums[center_idx];
+        float sx, sy;
+        get_album_aspect_scale (al, &sx, &sy);
+        GLuint tex = al->texture_id ? al->texture_id : r->default_texture_id;
+        draw_cover_quad (r, x, z, angle, tint, tex, sx, sy);
     }
 
     glBindVertexArray (0);
@@ -478,42 +516,27 @@ gl_coverflow_load_texture_from_file (const char *filepath, int *out_w, int *out_
     if (!filepath || !*filepath) return 0;
 
     GError *error = NULL;
-    GdkPixbuf *scaled = gdk_pixbuf_new_from_file_at_scale (filepath, 512, 512, TRUE, &error);
-    if (!scaled) {
+    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale (filepath, 512, 512, TRUE, &error);
+    if (!pixbuf) {
         if (error) g_error_free (error);
         return 0;
     }
 
-    int sw = gdk_pixbuf_get_width (scaled);
-    int sh = gdk_pixbuf_get_height (scaled);
-
-    /* Fit into a standard 512x512 RGBA canvas to maintain uniform size style,
-       positioning flush with ground line (y=512) and centered horizontally */
-    const int canvas_size = 512;
-    GdkPixbuf *canvas = gdk_pixbuf_new (GDK_COLORSPACE_RGB, TRUE, 8, canvas_size, canvas_size);
-    if (!canvas) {
-        g_object_unref (scaled);
-        return 0;
-    }
-    gdk_pixbuf_fill (canvas, 0x00000000);
-
-    int dest_x = (canvas_size - sw) / 2;
-    int dest_y = canvas_size - sh;
-    gdk_pixbuf_copy_area (scaled, 0, 0, sw, sh, canvas, dest_x, dest_y);
-    g_object_unref (scaled);
-
-    int n_channels = gdk_pixbuf_get_n_channels (canvas);
-    int rowstride = gdk_pixbuf_get_rowstride (canvas);
-    const guchar *pixels = gdk_pixbuf_get_pixels (canvas);
+    int width = gdk_pixbuf_get_width (pixbuf);
+    int height = gdk_pixbuf_get_height (pixbuf);
+    int n_channels = gdk_pixbuf_get_n_channels (pixbuf);
+    int rowstride = gdk_pixbuf_get_rowstride (pixbuf);
+    const guchar *pixels = gdk_pixbuf_get_pixels (pixbuf);
 
     glPixelStorei (GL_UNPACK_ALIGNMENT, 1);
     glPixelStorei (GL_UNPACK_ROW_LENGTH, rowstride / n_channels);
 
+    GLenum format = (n_channels == 4) ? GL_RGBA : GL_RGB;
+
     GLuint tex = 0;
     glGenTextures (1, &tex);
     glBindTexture (GL_TEXTURE_2D, tex);
-    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA, canvas_size, canvas_size, 0,
-                  GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexImage2D (GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, pixels);
 
     glGenerateMipmap (GL_TEXTURE_2D);
 
@@ -524,10 +547,10 @@ gl_coverflow_load_texture_from_file (const char *filepath, int *out_w, int *out_
 
     glPixelStorei (GL_UNPACK_ROW_LENGTH, 0);
 
-    g_object_unref (canvas);
+    g_object_unref (pixbuf);
 
-    if (out_w) *out_w = sw;
-    if (out_h) *out_h = sh;
+    if (out_w) *out_w = width;
+    if (out_h) *out_h = height;
 
     return tex;
 }
