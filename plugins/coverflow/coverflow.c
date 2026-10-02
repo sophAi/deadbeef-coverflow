@@ -32,12 +32,9 @@ typedef struct {
     ddb_gtkui_widget_t base;
     ddb_gtkui_widget_extended_api_t exapi;
 
-    GtkWidget *container;    /* Vertical GtkBox holding GLArea & bottom info panel */
+    GtkWidget *container;    /* Vertical GtkBox holding top title label & GLArea */
     GtkWidget *gl_area;      /* GtkGLArea 3D viewport */
-    GtkWidget *info_box;     /* Bottom bar with labels */
-    GtkWidget *lbl_album;    /* Bold primary album label */
-    GtkWidget *lbl_artist;   /* Artist label */
-    GtkWidget *lbl_meta;     /* Track count and release year */
+    GtkWidget *lbl_album;    /* Album title label displayed above 3D covers */
 
     album_manager_t album_mgr;
     gl_coverflow_renderer_t gl_renderer;
@@ -82,8 +79,6 @@ update_info_labels (w_coverflow_t *w) {
     int idx = (int)roundf (w->current_pos);
     if (idx < 0 || idx >= w->album_mgr.count) {
         gtk_label_set_text (GTK_LABEL (w->lbl_album), "");
-        gtk_label_set_text (GTK_LABEL (w->lbl_artist), _("No Albums in Playlist"));
-        gtk_label_set_text (GTK_LABEL (w->lbl_meta), "");
         w->last_displayed_album = -1;
         return;
     }
@@ -95,28 +90,19 @@ update_info_labels (w_coverflow_t *w) {
 
     coverflow_album_t *al = &w->album_mgr.albums[idx];
 
-    /* Format album title with markup */
-    char *album_markup = g_markup_printf_escaped (
-        "<span size='large' weight='bold' color='#f0f0f0'>%s</span>",
-        al->album ? al->album : "Unknown Album");
+    /* Format album title (and artist if available) with escaped markup */
+    char *album_markup = NULL;
+    if (al->artist && al->artist[0] && strcmp (al->artist, "Unknown Artist") != 0) {
+        album_markup = g_markup_printf_escaped (
+            "<span size='large' weight='bold' color='#ffffff'>%s</span>  <span size='medium' color='#a6a6b0'>• %s</span>",
+            al->album ? al->album : "Unknown Album", al->artist);
+    } else {
+        album_markup = g_markup_printf_escaped (
+            "<span size='large' weight='bold' color='#ffffff'>%s</span>",
+            al->album ? al->album : "Unknown Album");
+    }
     gtk_label_set_markup (GTK_LABEL (w->lbl_album), album_markup);
     g_free (album_markup);
-
-    /* Format artist */
-    char *artist_markup = g_markup_printf_escaped (
-        "<span size='medium' color='#b0b0b8'>%s</span>",
-        al->artist ? al->artist : "Unknown Artist");
-    gtk_label_set_markup (GTK_LABEL (w->lbl_artist), artist_markup);
-    g_free (artist_markup);
-
-    /* Format metadata details */
-    char meta_str[256];
-    if (al->year && *al->year) {
-        snprintf (meta_str, sizeof (meta_str), "%d tracks • %s", al->track_count, al->year);
-    } else {
-        snprintf (meta_str, sizeof (meta_str), "%d tracks", al->track_count);
-    }
-    gtk_label_set_text (GTK_LABEL (w->lbl_meta), meta_str);
 }
 
 /* ---------------- Texture Upload Idle Callback ---------------- */
@@ -406,6 +392,23 @@ on_menu_reload_covers (GtkMenuItem *item, gpointer user_data) {
 }
 
 static void
+apply_dark_theme (int prefer_dark) {
+    GtkSettings *settings = gtk_settings_get_default ();
+    if (settings) {
+        g_object_set (settings, "gtk-application-prefer-dark-theme", prefer_dark ? TRUE : FALSE, NULL);
+    }
+}
+
+static void
+on_menu_toggle_dark_theme (GtkCheckMenuItem *item, gpointer user_data) {
+    gboolean active = gtk_check_menu_item_get_active (item);
+    deadbeef->conf_set_int ("gtkui.prefer_dark_theme", active ? 1 : 0);
+    deadbeef->conf_save ();
+    apply_dark_theme (active ? 1 : 0);
+    deadbeef->sendmessage (DB_EV_CONFIGCHANGED, 0, 0, 0);
+}
+
+static void
 show_context_menu (w_coverflow_t *w, GdkEventButton *event) {
     GtkWidget *menu = gtk_menu_new ();
 
@@ -423,6 +426,14 @@ show_context_menu (w_coverflow_t *w, GdkEventButton *event) {
     GtkWidget *mi_reload = gtk_menu_item_new_with_label (_("Reload Cover Artwork"));
     g_signal_connect (mi_reload, "activate", G_CALLBACK (on_menu_reload_covers), w);
     gtk_menu_shell_append (GTK_MENU_SHELL (menu), mi_reload);
+
+    GtkWidget *separator2 = gtk_separator_menu_item_new ();
+    gtk_menu_shell_append (GTK_MENU_SHELL (menu), separator2);
+
+    GtkWidget *mi_dark = gtk_check_menu_item_new_with_label (_("Dark Theme"));
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (mi_dark), deadbeef->conf_get_int ("gtkui.prefer_dark_theme", 0));
+    g_signal_connect (mi_dark, "toggled", G_CALLBACK (on_menu_toggle_dark_theme), NULL);
+    gtk_menu_shell_append (GTK_MENU_SHELL (menu), mi_dark);
 
     gtk_widget_show_all (menu);
     gtk_menu_popup_at_pointer (GTK_MENU (menu), (GdkEvent *)event);
@@ -644,11 +655,20 @@ w_coverflow_create (void) {
         w->artwork_source_id = w->artwork_plugin->allocate_source_id ();
     }
 
-    /* Container: Vertical GtkBox with black background styling */
+    /* Container: Vertical GtkBox holding top title label & GLArea */
     w->container = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
     w->base.widget = w->container;
 
-    /* GtkGLArea 3D Viewport */
+    /* Top Album Label: Positioned right above the 3D cover flow */
+    w->lbl_album = gtk_label_new ("");
+    gtk_label_set_ellipsize (GTK_LABEL (w->lbl_album), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_margin_top (w->lbl_album, 8);
+    gtk_widget_set_margin_bottom (w->lbl_album, 4);
+    gtk_widget_set_margin_start (w->lbl_album, 12);
+    gtk_widget_set_margin_end (w->lbl_album, 12);
+    gtk_box_pack_start (GTK_BOX (w->container), w->lbl_album, FALSE, FALSE, 0);
+
+    /* GtkGLArea 3D Viewport: Expands to fill available space */
     w->gl_area = gtk_gl_area_new ();
     gtk_widget_set_can_focus (w->gl_area, TRUE);
     gtk_widget_set_size_request (w->gl_area, 300, 240);
@@ -656,24 +676,6 @@ w_coverflow_create (void) {
     gtk_box_pack_start (GTK_BOX (w->container), w->gl_area, TRUE, TRUE, 0);
 
     g_signal_connect (w->gl_area, "destroy", G_CALLBACK (on_gl_area_destroy), w);
-
-    /* Bottom Info Panel (Dark translucent bar for Artist / Album / Details) */
-    w->info_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
-    gtk_widget_set_margin_top (w->info_box, 6);
-    gtk_widget_set_margin_bottom (w->info_box, 12);
-
-    w->lbl_album = gtk_label_new ("");
-    gtk_label_set_ellipsize (GTK_LABEL (w->lbl_album), PANGO_ELLIPSIZE_END);
-    gtk_box_pack_start (GTK_BOX (w->info_box), w->lbl_album, FALSE, FALSE, 0);
-
-    w->lbl_artist = gtk_label_new (_("No Albums"));
-    gtk_label_set_ellipsize (GTK_LABEL (w->lbl_artist), PANGO_ELLIPSIZE_END);
-    gtk_box_pack_start (GTK_BOX (w->info_box), w->lbl_artist, FALSE, FALSE, 0);
-
-    w->lbl_meta = gtk_label_new ("");
-    gtk_box_pack_start (GTK_BOX (w->info_box), w->lbl_meta, FALSE, FALSE, 0);
-
-    gtk_box_pack_start (GTK_BOX (w->container), w->info_box, FALSE, FALSE, 0);
 
     /* OpenGL Signals */
     g_signal_connect (w->gl_area, "realize", G_CALLBACK (on_gl_realize), w);
@@ -715,6 +717,45 @@ w_coverflow_create (void) {
     return (ddb_gtkui_widget_t *)w;
 }
 
+/* ---------------- Plugin Actions & Preferences ---------------- */
+
+static int
+action_toggle_dark_theme (DB_plugin_action_t *act, void *userdata) {
+    int current = deadbeef->conf_get_int ("gtkui.prefer_dark_theme", 0);
+    int new_val = !current;
+    deadbeef->conf_set_int ("gtkui.prefer_dark_theme", new_val);
+    deadbeef->conf_save ();
+    apply_dark_theme (new_val);
+    deadbeef->sendmessage (DB_EV_CONFIGCHANGED, 0, 0, 0);
+    return 0;
+}
+
+static DB_plugin_action_t dark_theme_action = {
+    .title = "View/Dark Theme",
+    .name = "toggle_dark_theme",
+    .flags = DB_ACTION_COMMON,
+    .callback = action_toggle_dark_theme,
+    .next = NULL,
+};
+
+static DB_plugin_action_t *
+coverflow_get_actions (DB_playItem_t *it) {
+    return &dark_theme_action;
+}
+
+static const char coverflow_settings_dlg[] =
+    "property \"Prefer Dark Theme (GTK)\" checkbox gtkui.prefer_dark_theme 0;\n"
+;
+
+static int
+coverflow_plugin_message (uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
+    if (id == DB_EV_CONFIGCHANGED) {
+        int dark = deadbeef->conf_get_int ("gtkui.prefer_dark_theme", 0);
+        apply_dark_theme (dark);
+    }
+    return 0;
+}
+
 /* ---------------- Plugin Entry Point & Registration ---------------- */
 
 static int
@@ -724,6 +765,11 @@ coverflow_connect (void) {
         return -1;
     }
     gtkui_plugin->w_reg_widget (_("Cover Flow"), 0, w_coverflow_create, "coverflow", NULL);
+
+    /* Enforce Dark Theme preference on startup if enabled */
+    int dark = deadbeef->conf_get_int ("gtkui.prefer_dark_theme", 0);
+    apply_dark_theme (dark);
+
     return 0;
 }
 
@@ -751,6 +797,9 @@ static DB_misc_t plugin = {
     .plugin.website = "https://github.com/sophAi/deadbeef-coverflow",
     .plugin.connect = coverflow_connect,
     .plugin.disconnect = coverflow_disconnect,
+    .plugin.message = coverflow_plugin_message,
+    .plugin.get_actions = coverflow_get_actions,
+    .plugin.configdialog = coverflow_settings_dlg,
 };
 
 DB_plugin_t *

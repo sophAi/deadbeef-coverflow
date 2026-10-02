@@ -135,8 +135,11 @@ static const char *fragment_shader_source =
     "\n"
     "void main() {\n"
     "    vec4 texColor = texture(u_Texture, v_TexCoord);\n"
+    "    if (texColor.a < 0.01) {\n"
+    "        discard;\n"
+    "    }\n"
     "    if (u_IsReflection == 1) {\n"
-    "        float fade = clamp((1.0 - v_TexCoord.y) * u_ReflectionFade, 0.0, 0.42);\n"
+    "        float fade = clamp(v_TexCoord.y * u_ReflectionFade, 0.0, 0.45);\n"
     "        FragColor = vec4(texColor.rgb * u_Tint, texColor.a * u_Alpha * fade);\n"
     "    } else {\n"
     "        FragColor = vec4(texColor.rgb * u_Tint, texColor.a * u_Alpha);\n"
@@ -265,13 +268,13 @@ gl_coverflow_init (gl_coverflow_renderer_t *r) {
          1.0f,  2.0f, 0.0f,   1.0f, 0.0f,
 
         /* Reflection: Mirrored vertically below ground plane */
-        -1.0f, -0.02f, 0.0f,  0.0f, 0.0f,
-        -1.0f, -2.02f, 0.0f,  0.0f, 1.0f,
-         1.0f, -2.02f, 0.0f,  1.0f, 1.0f,
+        -1.0f, -0.02f, 0.0f,  0.0f, 1.0f,
+        -1.0f, -2.02f, 0.0f,  0.0f, 0.0f,
+         1.0f, -2.02f, 0.0f,  1.0f, 0.0f,
 
-        -1.0f, -0.02f, 0.0f,  0.0f, 0.0f,
-         1.0f, -2.02f, 0.0f,  1.0f, 1.0f,
-         1.0f, -0.02f, 0.0f,  1.0f, 0.0f
+        -1.0f, -0.02f, 0.0f,  0.0f, 1.0f,
+         1.0f, -2.02f, 0.0f,  1.0f, 0.0f,
+         1.0f, -0.02f, 0.0f,  1.0f, 1.0f
     };
 
     glGenVertexArrays (1, &r->vao);
@@ -475,29 +478,42 @@ gl_coverflow_load_texture_from_file (const char *filepath, int *out_w, int *out_
     if (!filepath || !*filepath) return 0;
 
     GError *error = NULL;
-    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale (filepath, 512, 512, TRUE, &error);
-    if (!pixbuf) {
+    GdkPixbuf *scaled = gdk_pixbuf_new_from_file_at_scale (filepath, 512, 512, TRUE, &error);
+    if (!scaled) {
         if (error) g_error_free (error);
         return 0;
     }
 
-    int width = gdk_pixbuf_get_width (pixbuf);
-    int height = gdk_pixbuf_get_height (pixbuf);
-    int n_channels = gdk_pixbuf_get_n_channels (pixbuf);
-    int rowstride = gdk_pixbuf_get_rowstride (pixbuf);
-    const guchar *pixels = gdk_pixbuf_get_pixels (pixbuf);
+    int sw = gdk_pixbuf_get_width (scaled);
+    int sh = gdk_pixbuf_get_height (scaled);
 
-    GLenum format = (n_channels == 4) ? GL_RGBA : GL_RGB;
+    /* Fit into a standard 512x512 RGBA canvas to maintain uniform size style,
+       positioning flush with ground line (y=512) and centered horizontally */
+    const int canvas_size = 512;
+    GdkPixbuf *canvas = gdk_pixbuf_new (GDK_COLORSPACE_RGB, TRUE, 8, canvas_size, canvas_size);
+    if (!canvas) {
+        g_object_unref (scaled);
+        return 0;
+    }
+    gdk_pixbuf_fill (canvas, 0x00000000);
 
-    /* Pack aligned for non-standard rowstrides */
+    int dest_x = (canvas_size - sw) / 2;
+    int dest_y = canvas_size - sh;
+    gdk_pixbuf_copy_area (scaled, 0, 0, sw, sh, canvas, dest_x, dest_y);
+    g_object_unref (scaled);
+
+    int n_channels = gdk_pixbuf_get_n_channels (canvas);
+    int rowstride = gdk_pixbuf_get_rowstride (canvas);
+    const guchar *pixels = gdk_pixbuf_get_pixels (canvas);
+
     glPixelStorei (GL_UNPACK_ALIGNMENT, 1);
     glPixelStorei (GL_UNPACK_ROW_LENGTH, rowstride / n_channels);
 
     GLuint tex = 0;
     glGenTextures (1, &tex);
     glBindTexture (GL_TEXTURE_2D, tex);
-    glTexImage2D (GL_TEXTURE_2D, 0, (n_channels == 4) ? GL_RGBA : GL_RGB,
-                  width, height, 0, format, GL_UNSIGNED_BYTE, pixels);
+    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA, canvas_size, canvas_size, 0,
+                  GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 
     glGenerateMipmap (GL_TEXTURE_2D);
 
@@ -508,10 +524,10 @@ gl_coverflow_load_texture_from_file (const char *filepath, int *out_w, int *out_
 
     glPixelStorei (GL_UNPACK_ROW_LENGTH, 0);
 
-    g_object_unref (pixbuf);
+    g_object_unref (canvas);
 
-    if (out_w) *out_w = width;
-    if (out_h) *out_h = height;
+    if (out_w) *out_w = sw;
+    if (out_h) *out_h = sh;
 
     return tex;
 }
