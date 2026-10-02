@@ -340,13 +340,13 @@ gl_coverflow_resize (gl_coverflow_renderer_t *r, int width, int height) {
 
     glViewport (0, 0, r->width, r->height);
 
-    /* Perspective projection: FOV 42 degrees */
-    mat4_perspective (r->mat_proj, 42.0f * (float)M_PI / 180.0f, r->aspect_ratio, 0.1f, 100.0f);
+    /* Perspective projection: FOV 45 degrees for wider panoramic viewing */
+    mat4_perspective (r->mat_proj, 45.0f * (float)M_PI / 180.0f, r->aspect_ratio, 0.1f, 100.0f);
 
     /* Camera view: slightly above ground, looking towards center */
     mat4_lookat (r->mat_view,
-                 0.0f, 0.95f, 4.4f,  /* eye position */
-                 0.0f, 0.85f, 0.0f,  /* target lookat */
+                 0.0f, 0.98f, 4.7f,  /* eye position: slightly further back to capture wide view */
+                 0.0f, 0.82f, 0.0f,  /* target lookat */
                  0.0f, 1.0f,  0.0f); /* up vector */
 }
 
@@ -368,6 +368,69 @@ get_album_aspect_scale (const coverflow_album_t *al, float *out_sx, float *out_s
         *out_sx = 1.0f;
         *out_sy = 1.0f;
     }
+}
+
+static inline float
+get_coverflow_x_dist (float d) {
+    const float X1 = 1.40f;    /* Distance from center (0) to first side cover (d=1) */
+    const float S0 = 0.38f;    /* Initial spacing between covers near center */
+    const float Smin = 0.16f;  /* Minimum fixed spacing at distance */
+    const float T = 5.0f;      /* Distance range over which spacing gradually decreases */
+
+    if (d <= 0.0f) {
+        return 0.0f;
+    }
+    if (d < 1.0f) {
+        /* Smooth ease into center */
+        return X1 * d;
+    }
+
+    float t = d - 1.0f;
+    if (t <= T) {
+        /* Smooth quadratic decay from S0 to Smin */
+        float inv = 1.0f - t / T;
+        return X1 + Smin * t + (S0 - Smin) * (T / 3.0f) * (1.0f - inv * inv * inv);
+    } else {
+        /* Beyond distance T, maintain strictly constant fixed spacing Smin */
+        return X1 + Smin * t + (S0 - Smin) * (T / 3.0f);
+    }
+}
+
+static inline float
+get_coverflow_x (float delta) {
+    float d = fabsf (delta);
+    float x = get_coverflow_x_dist (d);
+    return delta < 0.0f ? -x : x;
+}
+
+static inline float
+get_coverflow_z (float delta) {
+    float d = fabsf (delta);
+    if (d < 1.0f) {
+        return -d * 0.75f;
+    }
+    return -0.75f - (d - 1.0f) * 0.035f;
+}
+
+static inline float
+get_coverflow_angle (float delta) {
+    float d = fabsf (delta);
+    const float max_angle = 60.0f * (float)M_PI / 180.0f;
+    if (d < 1.0f) {
+        return -delta * max_angle;
+    }
+    return delta < 0.0f ? max_angle : -max_angle;
+}
+
+static inline float
+get_coverflow_tint (float delta) {
+    float d = fabsf (delta);
+    if (d < 1.0f) {
+        return 1.0f - d * 0.54f;
+    }
+    float dist_fade = (d - 1.0f) * 0.012f;
+    if (dist_fade > 0.15f) dist_fade = 0.15f;
+    return 0.46f - dist_fade;
 }
 
 static inline float
@@ -434,7 +497,7 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
 
     int count = mgr->count;
     int center_idx = (int)roundf (current_pos);
-    int visible_range = 14;
+    int visible_range = 30; /* Extended visible range to accommodate more 3D covers */
 
     int min_idx = center_idx - visible_range;
     if (min_idx < 0) min_idx = 0;
@@ -442,33 +505,20 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
     if (max_idx >= count) max_idx = count - 1;
 
     /* Render order: Far Left -> Near Left, Far Right -> Near Right, Center Cover LAST
-       This ensures transparent reflection and edges blend correctly. */
+       This ensures transparent reflection and edges blend correctly with depth testing. */
 
     /* 1. Left side covers: from far left inwards */
     for (int i = min_idx; i < center_idx; i++) {
         float delta = (float)i - current_pos;
-        float angle, x, z, tint;
-
-        if (delta <= -1.0f) {
-            angle = 60.0f * (float)M_PI / 180.0f;
-            x = -1.35f + (delta + 1.0f) * 0.38f;
-            z = -0.75f + (delta + 1.0f) * 0.05f;
-            float dist_fade = (-delta - 1.0f) * 0.02f;
-            if (dist_fade > 0.12f) dist_fade = 0.12f;
-            tint = 0.46f - dist_fade;
-        } else {
-            /* Smooth transition into center */
-            float t = (delta + 1.0f); // 0.0 to 1.0
-            angle = (1.0f - t) * (60.0f * (float)M_PI / 180.0f);
-            x = -1.35f * (1.0f - t) + delta * 1.35f * t;
-            z = -0.75f * (1.0f - t);
-            tint = 0.46f + 0.54f * t;
-        }
+        float x = get_coverflow_x (delta);
+        float z = get_coverflow_z (delta);
+        float angle = get_coverflow_angle (delta);
+        float tint = get_coverflow_tint (delta);
+        float scale = get_coverflow_scale (delta);
 
         coverflow_album_t *al = &mgr->albums[i];
         float sx, sy;
         get_album_aspect_scale (al, &sx, &sy);
-        float scale = get_coverflow_scale (delta);
         sx *= scale;
         sy *= scale;
         GLuint tex = al->texture_id ? al->texture_id : r->default_texture_id;
@@ -478,28 +528,15 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
     /* 2. Right side covers: from far right inwards */
     for (int i = max_idx; i > center_idx; i--) {
         float delta = (float)i - current_pos;
-        float angle, x, z, tint;
-
-        if (delta >= 1.0f) {
-            angle = -60.0f * (float)M_PI / 180.0f;
-            x = 1.35f + (delta - 1.0f) * 0.38f;
-            z = -0.75f - (delta - 1.0f) * 0.05f;
-            float dist_fade = (delta - 1.0f) * 0.02f;
-            if (dist_fade > 0.12f) dist_fade = 0.12f;
-            tint = 0.46f - dist_fade;
-        } else {
-            /* Smooth transition into center */
-            float t = (1.0f - delta); // 0.0 to 1.0
-            angle = -(1.0f - t) * (60.0f * (float)M_PI / 180.0f);
-            x = 1.35f * (1.0f - t) + delta * 1.35f * t;
-            z = -0.75f * (1.0f - t);
-            tint = 0.46f + 0.54f * t;
-        }
+        float x = get_coverflow_x (delta);
+        float z = get_coverflow_z (delta);
+        float angle = get_coverflow_angle (delta);
+        float tint = get_coverflow_tint (delta);
+        float scale = get_coverflow_scale (delta);
 
         coverflow_album_t *al = &mgr->albums[i];
         float sx, sy;
         get_album_aspect_scale (al, &sx, &sy);
-        float scale = get_coverflow_scale (delta);
         sx *= scale;
         sy *= scale;
         GLuint tex = al->texture_id ? al->texture_id : r->default_texture_id;
@@ -509,15 +546,15 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
     /* 3. Center cover */
     if (center_idx >= 0 && center_idx < count) {
         float delta = (float)center_idx - current_pos;
-        float angle = -delta * (60.0f * (float)M_PI / 180.0f);
-        float x = delta * 1.35f;
-        float z = -fabsf (delta) * 0.75f;
-        float tint = 1.0f - fabsf (delta) * 0.54f;
+        float x = get_coverflow_x (delta);
+        float z = get_coverflow_z (delta);
+        float angle = get_coverflow_angle (delta);
+        float tint = get_coverflow_tint (delta);
+        float scale = get_coverflow_scale (delta);
 
         coverflow_album_t *al = &mgr->albums[center_idx];
         float sx, sy;
         get_album_aspect_scale (al, &sx, &sy);
-        float scale = get_coverflow_scale (delta);
         sx *= scale;
         sy *= scale;
         GLuint tex = al->texture_id ? al->texture_id : r->default_texture_id;

@@ -199,7 +199,7 @@ check_and_fetch_artwork_for_visible_albums (w_coverflow_t *w) {
     if (!w->artwork_plugin || w->album_mgr.count == 0) return;
 
     int center = (int)roundf (w->current_pos);
-    int fetch_radius = 8;
+    int fetch_radius = 24;
     int min_idx = center - fetch_radius;
     if (min_idx < 0) min_idx = 0;
     int max_idx = center + fetch_radius;

@@ -194,16 +194,34 @@ album_manager_rebuild (album_manager_t *mgr, ddb_playlist_t *plt) {
             year = deadbeef->pl_find_meta (it, "date");
         }
 
-        /* Group key: "Artist||Album" */
+        /* Group key: Only group by Album Title */
         char key_buf[512];
-        snprintf (key_buf, sizeof (key_buf), "%s||%s", artist, album);
+        g_strlcpy (key_buf, album, sizeof (key_buf));
+        g_strstrip (key_buf);
 
         gpointer val = NULL;
         int target_idx = -1;
         if (g_hash_table_lookup_extended (album_map, key_buf, NULL, &val)) {
             target_idx = GPOINTER_TO_INT (val);
+            coverflow_album_t *al = &mgr->albums[target_idx];
+            /* Prefer explicit albumartist if available */
+            const char *alb_artist = deadbeef->pl_find_meta (it, "albumartist");
+            if (alb_artist && *alb_artist) {
+                if (!al->artist || strcmp (al->artist, alb_artist) != 0) {
+                    free (al->artist);
+                    al->artist = strdup (alb_artist);
+                }
+            } else if (al->artist && strcmp (al->artist, "Various Artists") != 0 && strcmp (al->artist, artist) != 0) {
+                /* Tracks under the same album have different artists */
+                free (al->artist);
+                al->artist = strdup ("Various Artists");
+            }
         } else {
-            target_idx = album_manager_add_album (mgr, key_buf, artist, album, year, it);
+            const char *display_artist = deadbeef->pl_find_meta (it, "albumartist");
+            if (!display_artist || !*display_artist) {
+                display_artist = artist;
+            }
+            target_idx = album_manager_add_album (mgr, key_buf, display_artist, album, year, it);
             g_hash_table_insert (album_map, strdup (key_buf), GINT_TO_POINTER (target_idx));
         }
 
