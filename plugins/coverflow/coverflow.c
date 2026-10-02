@@ -6,6 +6,10 @@
     integrating album grouping and embedded MP3 album art via DeaDBeeF's artwork2 plugin.
 */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <deadbeef/deadbeef.h>
 #include <gtk/gtk.h>
 #include <glib/gi18n.h>
@@ -14,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <dlfcn.h>
 
 #include "../gtkui/gtkui_api.h"
 #include "../artwork/artwork.h"
@@ -392,14 +397,167 @@ on_menu_reload_covers (GtkMenuItem *item, gpointer user_data) {
 }
 
 static int s_current_dark_theme = -1;
+static GtkCssProvider *s_dark_css_provider = NULL;
+
+static void
+set_dark_theme_config (int dark) {
+    if (dark) {
+        /* Enable overrides for Tabstrip & Listview */
+        deadbeef->conf_set_int ("gtkui.override_tabstrip_colors", 1);
+        deadbeef->conf_set_int ("gtkui.override_listview_colors", 1);
+
+        /* Tabstrip Palette (16-bit RGB 0..65535 format: "R G B") */
+        /* Active tab background & listview column header background: #202025 */
+        deadbeef->conf_set_str ("gtkui.color.tabstrip_base", "8224 8224 9508");
+        /* Inactive tab & tabstrip bar background: #16161a */
+        deadbeef->conf_set_str ("gtkui.color.tabstrip_mid", "5654 5654 6682");
+        /* Border / outer frame / divider lines: #101014 */
+        deadbeef->conf_set_str ("gtkui.color.tabstrip_dark", "4112 4112 5140");
+        /* Inner frame highlight / divider line: #2c2c36 */
+        deadbeef->conf_set_str ("gtkui.color.tabstrip_light", "11308 11308 13878");
+        /* Inactive tab label text: #9e9ea8 */
+        deadbeef->conf_set_str ("gtkui.color.tabstrip_text", "40606 40606 43176");
+        /* Active tab label text: #ffffff */
+        deadbeef->conf_set_str ("gtkui.color.tabstrip_selected_text", "65535 65535 65535");
+        /* Playing tab label text: #5dade2 (vibrant cyan/blue) */
+        deadbeef->conf_set_str ("gtkui.color.tabstrip_playing_text", "23901 44461 57825");
+
+        /* Listview Headers & Rows Palette */
+        /* Column header text: #dcdce4 */
+        deadbeef->conf_set_str ("gtkui.color.listview_column_text", "56540 56540 58600");
+        /* Even row background: #19191e */
+        deadbeef->conf_set_str ("gtkui.color.listview_even_row", "6425 6425 7710");
+        /* Odd row background: #1e1e24 */
+        deadbeef->conf_set_str ("gtkui.color.listview_odd_row", "7710 7710 9252");
+        /* Selected row background: #24528c */
+        deadbeef->conf_set_str ("gtkui.color.listview_selection", "9252 21074 35980");
+        /* Normal row text: #e0e0e8 */
+        deadbeef->conf_set_str ("gtkui.color.listview_text", "57568 57568 59624");
+        /* Selected row text: #ffffff */
+        deadbeef->conf_set_str ("gtkui.color.listview_selected_text", "65535 65535 65535");
+        /* Playing row text: #5dade2 */
+        deadbeef->conf_set_str ("gtkui.color.listview_playing_text", "23901 44461 57825");
+        /* Group header text: #a4a4b4 */
+        deadbeef->conf_set_str ("gtkui.color.listview_group_text", "42148 42148 46260");
+        /* Cursor border: #5dade2 */
+        deadbeef->conf_set_str ("gtkui.color.listview_cursor", "23901 44461 57825");
+    } else {
+        /* Disable overrides so DeaDBeeF returns to system/default theme */
+        deadbeef->conf_set_int ("gtkui.override_tabstrip_colors", 0);
+        deadbeef->conf_set_int ("gtkui.override_listview_colors", 0);
+    }
+    deadbeef->conf_save ();
+}
+
+static void
+apply_gtk_dark_css (gboolean enable) {
+    GdkScreen *screen = gdk_screen_get_default ();
+    if (!screen) return;
+
+    if (enable) {
+        if (!s_dark_css_provider) {
+            s_dark_css_provider = gtk_css_provider_new ();
+            const char *dark_css =
+                "window, .background {\n"
+                "    background-color: #1a1a1f;\n"
+                "    color: #dedee6;\n"
+                "}\n"
+                "headerbar, toolbar, menubar {\n"
+                "    background-color: #141418;\n"
+                "    color: #dedee6;\n"
+                "}\n"
+                "menu, .menu {\n"
+                "    background-color: #222228;\n"
+                "    color: #dedee6;\n"
+                "    border: 1px solid #33333e;\n"
+                "}\n"
+                "menuitem, .menuitem {\n"
+                "    color: #dedee6;\n"
+                "}\n"
+                "menuitem:hover, .menuitem:hover {\n"
+                "    background-color: #32323e;\n"
+                "    color: #ffffff;\n"
+                "}\n"
+                "scrollbar slider {\n"
+                "    background-color: #3e3e4a;\n"
+                "    border-radius: 4px;\n"
+                "    min-width: 6px;\n"
+                "    min-height: 6px;\n"
+                "}\n"
+                "scrollbar slider:hover {\n"
+                "    background-color: #555566;\n"
+                "}\n"
+                "scrollbar trough {\n"
+                "    background-color: #16161b;\n"
+                "}\n"
+                "treeview {\n"
+                "    background-color: #1e1e24;\n"
+                "    color: #dedee6;\n"
+                "}\n"
+                "notebook > header {\n"
+                "    background-color: #141418;\n"
+                "}\n"
+                "notebook > header > tabs > tab {\n"
+                "    background-color: #1c1c22;\n"
+                "    color: #9e9ea8;\n"
+                "}\n"
+                "notebook > header > tabs > tab:checked {\n"
+                "    background-color: #22222a;\n"
+                "    color: #ffffff;\n"
+                "}\n";
+            gtk_css_provider_load_from_data (s_dark_css_provider, dark_css, -1, NULL);
+            gtk_style_context_add_provider_for_screen (screen,
+                GTK_STYLE_PROVIDER (s_dark_css_provider),
+                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+    } else {
+        if (s_dark_css_provider) {
+            gtk_style_context_remove_provider_for_screen (screen,
+                GTK_STYLE_PROVIDER (s_dark_css_provider));
+            g_object_unref (s_dark_css_provider);
+            s_dark_css_provider = NULL;
+        }
+    }
+}
 
 static gboolean
 apply_dark_theme_idle (gpointer data) {
     int prefer_dark = GPOINTER_TO_INT (data);
+
+    /* 1. Toggle GTK Application Prefer Dark Theme */
     GtkSettings *settings = gtk_settings_get_default ();
     if (settings) {
         g_object_set (settings, "gtk-application-prefer-dark-theme", prefer_dark ? TRUE : FALSE, NULL);
     }
+
+    /* 2. Global Dark CSS */
+    apply_gtk_dark_css (prefer_dark ? TRUE : FALSE);
+
+    /* 3. Trigger gtkui theme color reload if available */
+    void (*p_init_theme_colors)(void) = dlsym (RTLD_DEFAULT, "gtkui_init_theme_colors");
+    if (!p_init_theme_colors) {
+        void *h = dlopen ("ddb_gui_GTK3.so", RTLD_NOLOAD | RTLD_LAZY);
+        if (h) {
+            p_init_theme_colors = dlsym (h, "gtkui_init_theme_colors");
+        }
+    }
+    if (p_init_theme_colors) {
+        p_init_theme_colors ();
+    }
+
+    /* 4. Notify gtkui that tabstrip and listview settings changed */
+    deadbeef->sendmessage (DB_EV_CONFIGCHANGED, (uintptr_t)"gtkui.override_tabstrip_colors", 0, 0);
+    deadbeef->sendmessage (DB_EV_CONFIGCHANGED, (uintptr_t)"gtkui.override_listview_colors", 0, 0);
+
+    /* 5. Queue redraw across all open GTK windows */
+    GList *toplevels = gtk_window_list_toplevels ();
+    for (GList *l = toplevels; l != NULL; l = l->next) {
+        if (GTK_IS_WIDGET (l->data)) {
+            gtk_widget_queue_draw (GTK_WIDGET (l->data));
+        }
+    }
+    g_list_free (toplevels);
+
     return G_SOURCE_REMOVE;
 }
 
@@ -409,6 +567,7 @@ apply_dark_theme (int prefer_dark) {
         return;
     }
     s_current_dark_theme = prefer_dark;
+    set_dark_theme_config (prefer_dark);
     g_idle_add (apply_dark_theme_idle, GINT_TO_POINTER (prefer_dark));
 }
 
@@ -418,7 +577,6 @@ on_menu_toggle_dark_theme (GtkCheckMenuItem *item, gpointer user_data) {
     deadbeef->conf_set_int ("gtkui.prefer_dark_theme", active ? 1 : 0);
     deadbeef->conf_save ();
     apply_dark_theme (active ? 1 : 0);
-    deadbeef->sendmessage (DB_EV_CONFIGCHANGED, 0, 0, 0);
 }
 
 static void
@@ -758,7 +916,6 @@ action_toggle_dark_theme (DB_plugin_action_t *act, void *userdata) {
     deadbeef->conf_set_int ("gtkui.prefer_dark_theme", new_val);
     deadbeef->conf_save ();
     apply_dark_theme (new_val);
-    deadbeef->sendmessage (DB_EV_CONFIGCHANGED, 0, 0, 0);
     return 0;
 }
 
@@ -782,8 +939,10 @@ static const char coverflow_settings_dlg[] =
 static int
 coverflow_plugin_message (uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
     if (id == DB_EV_CONFIGCHANGED) {
-        int dark = deadbeef->conf_get_int ("gtkui.prefer_dark_theme", 0);
-        apply_dark_theme (dark);
+        if (ctx == 0 || (ctx && strcmp ((const char *)ctx, "gtkui.prefer_dark_theme") == 0)) {
+            int dark = deadbeef->conf_get_int ("gtkui.prefer_dark_theme", 0);
+            apply_dark_theme (dark);
+        }
     }
     return 0;
 }
@@ -800,7 +959,9 @@ coverflow_connect (void) {
 
     /* Enforce Dark Theme preference on startup if enabled */
     int dark = deadbeef->conf_get_int ("gtkui.prefer_dark_theme", 0);
-    apply_dark_theme (dark);
+    if (dark) {
+        apply_dark_theme (dark);
+    }
 
     return 0;
 }

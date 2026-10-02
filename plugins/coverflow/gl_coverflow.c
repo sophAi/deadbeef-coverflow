@@ -447,14 +447,16 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
             angle = 60.0f * (float)M_PI / 180.0f;
             x = -1.35f + (delta + 1.0f) * 0.38f;
             z = -0.75f + (delta + 1.0f) * 0.05f;
-            tint = 0.72f;
+            float dist_fade = (-delta - 1.0f) * 0.02f;
+            if (dist_fade > 0.12f) dist_fade = 0.12f;
+            tint = 0.46f - dist_fade;
         } else {
             /* Smooth transition into center */
             float t = (delta + 1.0f); // 0.0 to 1.0
             angle = (1.0f - t) * (60.0f * (float)M_PI / 180.0f);
             x = -1.35f * (1.0f - t) + delta * 1.35f * t;
             z = -0.75f * (1.0f - t);
-            tint = 0.72f + 0.28f * t;
+            tint = 0.46f + 0.54f * t;
         }
 
         coverflow_album_t *al = &mgr->albums[i];
@@ -473,14 +475,16 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
             angle = -60.0f * (float)M_PI / 180.0f;
             x = 1.35f + (delta - 1.0f) * 0.38f;
             z = -0.75f - (delta - 1.0f) * 0.05f;
-            tint = 0.72f;
+            float dist_fade = (delta - 1.0f) * 0.02f;
+            if (dist_fade > 0.12f) dist_fade = 0.12f;
+            tint = 0.46f - dist_fade;
         } else {
             /* Smooth transition into center */
             float t = (1.0f - delta); // 0.0 to 1.0
             angle = -(1.0f - t) * (60.0f * (float)M_PI / 180.0f);
             x = 1.35f * (1.0f - t) + delta * 1.35f * t;
             z = -0.75f * (1.0f - t);
-            tint = 0.72f + 0.28f * t;
+            tint = 0.46f + 0.54f * t;
         }
 
         coverflow_album_t *al = &mgr->albums[i];
@@ -496,7 +500,7 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
         float angle = -delta * (60.0f * (float)M_PI / 180.0f);
         float x = delta * 1.35f;
         float z = -fabsf (delta) * 0.75f;
-        float tint = 1.0f - fabsf (delta) * 0.25f;
+        float tint = 1.0f - fabsf (delta) * 0.54f;
 
         coverflow_album_t *al = &mgr->albums[center_idx];
         float sx, sy;

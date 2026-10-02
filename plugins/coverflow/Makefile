@@ -3,7 +3,7 @@ CFLAGS ?= -O2 -Wall -fPIC
 LDFLAGS ?= -shared
 
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 epoxy)
-GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 epoxy) -lm
+GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 epoxy) -lm -ldl
 
 INCLUDES := -I../../include -I../.. -I.
 
