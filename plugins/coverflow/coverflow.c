@@ -24,6 +24,11 @@ DB_functions_t *deadbeef;
 static ddb_gtkui_t *gtkui_plugin;
 
 typedef struct {
+    int ref_count;
+    gboolean alive;
+} coverflow_lifecycle_t;
+
+typedef struct {
     ddb_gtkui_widget_t base;
     ddb_gtkui_widget_extended_api_t exapi;
 
@@ -39,6 +44,7 @@ typedef struct {
 
     ddb_artwork_plugin_t *artwork_plugin;
     int64_t artwork_source_id;
+    coverflow_lifecycle_t *lifecycle;
 
     float current_pos;
     float target_pos;
@@ -90,18 +96,18 @@ update_info_labels (w_coverflow_t *w) {
     coverflow_album_t *al = &w->album_mgr.albums[idx];
 
     /* Format album title with markup */
-    char album_markup[512];
-    snprintf (album_markup, sizeof (album_markup),
-              "<span size='large' weight='bold' color='#f0f0f0'>%s</span>",
-              al->album ? al->album : "Unknown Album");
+    char *album_markup = g_markup_printf_escaped (
+        "<span size='large' weight='bold' color='#f0f0f0'>%s</span>",
+        al->album ? al->album : "Unknown Album");
     gtk_label_set_markup (GTK_LABEL (w->lbl_album), album_markup);
+    g_free (album_markup);
 
     /* Format artist */
-    char artist_markup[512];
-    snprintf (artist_markup, sizeof (artist_markup),
-              "<span size='medium' color='#b0b0b8'>%s</span>",
-              al->artist ? al->artist : "Unknown Artist");
+    char *artist_markup = g_markup_printf_escaped (
+        "<span size='medium' color='#b0b0b8'>%s</span>",
+        al->artist ? al->artist : "Unknown Artist");
     gtk_label_set_markup (GTK_LABEL (w->lbl_artist), artist_markup);
+    g_free (artist_markup);
 
     /* Format metadata details */
     char meta_str[256];
@@ -117,6 +123,7 @@ update_info_labels (w_coverflow_t *w) {
 
 typedef struct {
     w_coverflow_t *w;
+    coverflow_lifecycle_t *lifecycle;
     int playlist_version;
     int album_index;
     char *image_path;
@@ -125,30 +132,39 @@ typedef struct {
 static gboolean
 on_texture_ready_in_main_thread (gpointer user_data) {
     texture_ready_data_t *data = (texture_ready_data_t *)user_data;
-    w_coverflow_t *w = data->w;
-    int idx = data->album_index;
 
-    if (w && data->playlist_version == w->playlist_version &&
-        idx >= 0 && idx < w->album_mgr.count) {
-        coverflow_album_t *al = &w->album_mgr.albums[idx];
-        if (al->pending_image_path) {
-            free (al->pending_image_path);
-            al->pending_image_path = NULL;
-        }
-        if (data->image_path && data->image_path[0]) {
-            al->pending_image_path = data->image_path;
-            data->image_path = NULL; /* Transfer ownership */
-        }
-        al->texture_loaded = TRUE;
-        al->is_fetching = FALSE;
+    if (data->lifecycle && data->lifecycle->alive) {
+        w_coverflow_t *w = data->w;
+        int idx = data->album_index;
 
-        if (w->gl_area) {
-            gtk_widget_queue_draw (w->gl_area);
+        if (data->playlist_version == w->playlist_version &&
+            idx >= 0 && idx < w->album_mgr.count) {
+            coverflow_album_t *al = &w->album_mgr.albums[idx];
+            if (al->pending_image_path) {
+                free (al->pending_image_path);
+                al->pending_image_path = NULL;
+            }
+            if (data->image_path && data->image_path[0]) {
+                al->pending_image_path = data->image_path;
+                data->image_path = NULL; /* Transfer ownership */
+            }
+            al->texture_loaded = TRUE;
+            al->is_fetching = FALSE;
+
+            if (w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
+                gtk_widget_queue_draw (w->gl_area);
+            }
         }
     }
 
     if (data->image_path) {
         free (data->image_path);
+    }
+    if (data->lifecycle) {
+        data->lifecycle->ref_count--;
+        if (data->lifecycle->ref_count == 0) {
+            free (data->lifecycle);
+        }
     }
     free (data);
     return G_SOURCE_REMOVE;
@@ -171,6 +187,12 @@ on_cover_query_callback (int error, ddb_cover_query_t *query, ddb_cover_info_t *
         texture_ready_data_t *data = (texture_ready_data_t *)query->user_data;
         if (data->image_path) {
             free (data->image_path);
+        }
+        if (data->lifecycle) {
+            data->lifecycle->ref_count--;
+            if (data->lifecycle->ref_count == 0) {
+                free (data->lifecycle);
+            }
         }
         free (data);
     }
@@ -199,6 +221,10 @@ check_and_fetch_artwork_for_visible_albums (w_coverflow_t *w) {
 
             texture_ready_data_t *tdata = malloc (sizeof (texture_ready_data_t));
             tdata->w = w;
+            tdata->lifecycle = w->lifecycle;
+            if (w->lifecycle) {
+                w->lifecycle->ref_count++;
+            }
             tdata->playlist_version = w->playlist_version;
             tdata->album_index = i;
             tdata->image_path = NULL;
@@ -220,13 +246,16 @@ check_and_fetch_artwork_for_visible_albums (w_coverflow_t *w) {
 static gboolean
 on_animation_tick (GtkWidget *widget, GdkFrameClock *frame_clock, gpointer user_data) {
     w_coverflow_t *w = (w_coverflow_t *)user_data;
+    if (!w || !w->gl_area || !GTK_IS_WIDGET (widget)) {
+        return G_SOURCE_REMOVE;
+    }
 
     float diff = w->target_pos - w->current_pos;
     if (fabsf (diff) > 0.0005f) {
         /* Smooth spring/damped easing */
         w->current_pos += diff * 0.18f;
         update_info_labels (w);
-        gtk_widget_queue_draw (w->gl_area);
+        gtk_widget_queue_draw (widget);
     } else {
         w->current_pos = w->target_pos;
         update_info_labels (w);
@@ -519,11 +548,27 @@ on_key_press_event (GtkWidget *widget, GdkEventKey *event, gpointer user_data) {
 /* ---------------- Widget Lifecycle & Design Mode ---------------- */
 
 static void
+on_gl_area_destroy (GtkWidget *widget, gpointer user_data) {
+    w_coverflow_t *w = (w_coverflow_t *)user_data;
+    w->tick_callback_id = 0;
+    w->gl_area = NULL;
+}
+
+static void
 w_coverflow_destroy (ddb_gtkui_widget_t *base) {
     w_coverflow_t *w = (w_coverflow_t *)base;
     if (!w) return;
 
-    if (w->tick_callback_id && w->gl_area) {
+    if (w->lifecycle) {
+        w->lifecycle->alive = FALSE;
+        w->lifecycle->ref_count--;
+        if (w->lifecycle->ref_count == 0) {
+            free (w->lifecycle);
+        }
+        w->lifecycle = NULL;
+    }
+
+    if (w->tick_callback_id && w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
         gtk_widget_remove_tick_callback (w->gl_area, w->tick_callback_id);
         w->tick_callback_id = 0;
     }
@@ -533,7 +578,7 @@ w_coverflow_destroy (ddb_gtkui_widget_t *base) {
     }
 
     album_manager_free (&w->album_mgr);
-    free (w);
+    /* Note: Do NOT call free(w) here! DeaDBeeF gtkui's w_destroy() frees w. */
 }
 
 static int
@@ -555,7 +600,7 @@ w_coverflow_message (ddb_gtkui_widget_t *base, uint32_t id, uintptr_t ctx, uint3
 
             clamp_target_position (w);
             update_info_labels (w);
-            if (w->gl_area) {
+            if (w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
                 gtk_widget_queue_draw (w->gl_area);
             }
         }
@@ -588,6 +633,10 @@ w_coverflow_create (void) {
     w->base.destroy = w_coverflow_destroy;
     w->base.message = w_coverflow_message;
 
+    w->lifecycle = calloc (1, sizeof (coverflow_lifecycle_t));
+    w->lifecycle->ref_count = 1;
+    w->lifecycle->alive = TRUE;
+
     album_manager_init (&w->album_mgr);
 
     w->artwork_plugin = (ddb_artwork_plugin_t *)deadbeef->plug_get_for_id ("artwork2");
@@ -605,6 +654,8 @@ w_coverflow_create (void) {
     gtk_widget_set_size_request (w->gl_area, 300, 240);
     gtk_gl_area_set_has_depth_buffer (GTK_GL_AREA (w->gl_area), TRUE);
     gtk_box_pack_start (GTK_BOX (w->container), w->gl_area, TRUE, TRUE, 0);
+
+    g_signal_connect (w->gl_area, "destroy", G_CALLBACK (on_gl_area_destroy), w);
 
     /* Bottom Info Panel (Dark translucent bar for Artist / Album / Details) */
     w->info_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
