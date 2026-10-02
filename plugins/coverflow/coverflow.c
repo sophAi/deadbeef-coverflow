@@ -12,6 +12,7 @@
 
 #include <deadbeef/deadbeef.h>
 #include <gtk/gtk.h>
+#include <gio/gio.h>
 #include <glib/gi18n.h>
 #include <gdk/gdkkeysyms.h>
 #include <epoxy/gl.h>
@@ -19,6 +20,10 @@
 #include <string.h>
 #include <math.h>
 #include <dlfcn.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <limits.h>
+#include <ctype.h>
 
 #include "../gtkui/gtkui_api.h"
 #include "../artwork/artwork.h"
@@ -770,7 +775,8 @@ w_coverflow_message (ddb_gtkui_widget_t *base, uint32_t id, uintptr_t ctx, uint3
 
     switch (id) {
     case DB_EV_PLAYLISTCHANGED:
-    case DB_EV_PLAYLISTSWITCHED: {
+    case DB_EV_PLAYLISTSWITCHED:
+    case DB_EV_TRACKINFOCHANGED: {
         ddb_playlist_t *plt = deadbeef->plt_get_curr ();
         if (plt) {
             if (w->artwork_plugin && w->artwork_source_id) {
@@ -923,6 +929,386 @@ w_coverflow_create (void) {
 
 /* ---------------- Plugin Actions & Preferences ---------------- */
 
+static GList *
+get_selected_tracks_from_context (ddb_action_context_t ctx, ddb_playlist_t **out_plt) {
+    ddb_playlist_t *plt = deadbeef->action_get_playlist ();
+    if (!plt) {
+        plt = deadbeef->plt_get_curr ();
+    }
+    if (!plt) {
+        return NULL;
+    }
+
+    deadbeef->pl_lock ();
+    GList *selected_list = NULL;
+    int count = deadbeef->plt_get_item_count (plt, PL_MAIN);
+    for (int i = 0; i < count; i++) {
+        DB_playItem_t *it = deadbeef->plt_get_item_for_idx (plt, i, PL_MAIN);
+        if (it) {
+            if (deadbeef->pl_is_selected (it)) {
+                deadbeef->pl_item_ref (it);
+                selected_list = g_list_append (selected_list, it);
+            }
+            deadbeef->pl_item_unref (it);
+        }
+    }
+
+    if (!selected_list) {
+        int cursor = deadbeef->pl_get_cursor (PL_MAIN);
+        if (cursor >= 0 && cursor < count) {
+            DB_playItem_t *it = deadbeef->plt_get_item_for_idx (plt, cursor, PL_MAIN);
+            if (it) {
+                selected_list = g_list_append (selected_list, it);
+            }
+        }
+    }
+    deadbeef->pl_unlock ();
+
+    if (!selected_list) {
+        deadbeef->plt_unref (plt);
+        return NULL;
+    }
+
+    if (out_plt) {
+        *out_plt = plt;
+    } else {
+        deadbeef->plt_unref (plt);
+    }
+    return selected_list;
+}
+
+static int
+action_set_album_title (DB_plugin_action_t *act, ddb_action_context_t ctx) {
+    ddb_playlist_t *plt = NULL;
+    GList *tracks = get_selected_tracks_from_context (ctx, &plt);
+    if (!tracks) {
+        return 0;
+    }
+
+    int num_tracks = g_list_length (tracks);
+    DB_playItem_t *first_track = (DB_playItem_t *)tracks->data;
+    const char *curr_album = deadbeef->pl_find_meta (first_track, "album");
+    if (!curr_album) {
+        curr_album = "";
+    }
+
+    GtkWidget *dialog = gtk_dialog_new_with_buttons (
+        _("批次更改專輯名稱 (Set Album Title)"),
+        NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        _("取消 (Cancel)"), GTK_RESPONSE_CANCEL,
+        _("套用 (Apply)"), GTK_RESPONSE_ACCEPT,
+        NULL
+    );
+    gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_ACCEPT);
+    gtk_window_set_default_size (GTK_WINDOW (dialog), 440, 160);
+
+    GtkWidget *content_area = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+    gtk_container_set_border_width (GTK_CONTAINER (content_area), 14);
+
+    GtkWidget *vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
+    gtk_container_add (GTK_CONTAINER (content_area), vbox);
+
+    char prompt_text[256];
+    snprintf (prompt_text, sizeof (prompt_text),
+              _("請輸入新的專輯名稱（將套用至 %d 首選取的音軌）："), num_tracks);
+    GtkWidget *label = gtk_label_new (prompt_text);
+    gtk_label_set_xalign (GTK_LABEL (label), 0.0f);
+    gtk_box_pack_start (GTK_BOX (vbox), label, FALSE, FALSE, 0);
+
+    GtkWidget *entry = gtk_entry_new ();
+    gtk_entry_set_text (GTK_ENTRY (entry), curr_album);
+    gtk_entry_set_activates_default (GTK_ENTRY (entry), TRUE);
+    gtk_box_pack_start (GTK_BOX (vbox), entry, FALSE, FALSE, 0);
+
+    gtk_widget_show_all (dialog);
+
+    gint response = gtk_dialog_run (GTK_DIALOG (dialog));
+    if (response == GTK_RESPONSE_ACCEPT) {
+        const char *new_text = gtk_entry_get_text (GTK_ENTRY (entry));
+        char *new_title = new_text ? g_strdup (new_text) : NULL;
+        if (new_title) {
+            g_strstrip (new_title);
+        }
+
+        deadbeef->pl_lock ();
+        DB_decoder_t **decoders = deadbeef->plug_get_decoder_list ();
+
+        for (GList *l = tracks; l != NULL; l = l->next) {
+            DB_playItem_t *it = (DB_playItem_t *)l->data;
+            deadbeef->pl_delete_meta (it, "album");
+            if (new_title && *new_title) {
+                deadbeef->pl_append_meta (it, "album", new_title);
+            }
+
+            /* Write metadata tags to audio file */
+            const char *dec_id = deadbeef->pl_find_meta_raw (it, ":DECODER");
+            if (dec_id && decoders) {
+                for (int d = 0; decoders[d]; d++) {
+                    if (strcmp (decoders[d]->plugin.id, dec_id) == 0) {
+                        if (decoders[d]->write_metadata) {
+                            decoders[d]->write_metadata (it);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        deadbeef->pl_unlock ();
+
+        if (new_title) {
+            g_free (new_title);
+        }
+
+        if (plt) {
+            deadbeef->plt_modified (plt);
+        }
+        deadbeef->sendmessage (DB_EV_PLAYLISTCHANGED, 0, DDB_PLAYLIST_CHANGE_CONTENT, 0);
+    }
+
+    gtk_widget_destroy (dialog);
+
+    for (GList *l = tracks; l != NULL; l = l->next) {
+        deadbeef->pl_item_unref ((DB_playItem_t *)l->data);
+    }
+    g_list_free (tracks);
+    if (plt) {
+        deadbeef->plt_unref (plt);
+    }
+
+    return 0;
+}
+
+static void
+file_chooser_update_preview_cb (GtkFileChooser *chooser, gpointer user_data) {
+    GtkWidget *image = GTK_WIDGET (user_data);
+    char *filename = gtk_file_chooser_get_preview_filename (chooser);
+    if (!filename) {
+        gtk_file_chooser_set_preview_widget_active (chooser, FALSE);
+        return;
+    }
+
+    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale (filename, 220, 220, TRUE, NULL);
+    g_free (filename);
+    if (pixbuf) {
+        gtk_image_set_from_pixbuf (GTK_IMAGE (image), pixbuf);
+        g_object_unref (pixbuf);
+        gtk_file_chooser_set_preview_widget_active (chooser, TRUE);
+    } else {
+        gtk_file_chooser_set_preview_widget_active (chooser, FALSE);
+    }
+}
+
+static int
+action_set_cover_art (DB_plugin_action_t *act, ddb_action_context_t ctx) {
+    ddb_playlist_t *plt = NULL;
+    GList *tracks = get_selected_tracks_from_context (ctx, &plt);
+    if (!tracks) {
+        return 0;
+    }
+
+    int num_tracks = g_list_length (tracks);
+
+    /* Determine initial folder from first track */
+    char *initial_folder = NULL;
+    DB_playItem_t *first_track = (DB_playItem_t *)tracks->data;
+    const char *uri = deadbeef->pl_find_meta (first_track, ":URI");
+    if (uri && deadbeef->is_local_file (uri)) {
+        char *path = NULL;
+        if (strncmp (uri, "file://", 7) == 0) {
+            path = g_filename_from_uri (uri, NULL, NULL);
+        } else {
+            path = g_strdup (uri);
+        }
+        if (path) {
+            initial_folder = g_path_get_dirname (path);
+            g_free (path);
+        }
+    }
+
+    GtkWidget *dialog = gtk_file_chooser_dialog_new (
+        _("選擇封面圖片 (Select Cover Art - PNG / JPG)"),
+        NULL,
+        GTK_FILE_CHOOSER_ACTION_OPEN,
+        _("取消 (Cancel)"), GTK_RESPONSE_CANCEL,
+        _("套用封面 (Apply Cover)"), GTK_RESPONSE_ACCEPT,
+        NULL
+    );
+    gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_ACCEPT);
+
+    if (initial_folder) {
+        gtk_file_chooser_set_current_folder (GTK_FILE_CHOOSER (dialog), initial_folder);
+        g_free (initial_folder);
+    }
+
+    /* Filters for PNG and JPG */
+    GtkFileFilter *filter_all = gtk_file_filter_new ();
+    gtk_file_filter_set_name (filter_all, _("支援的圖片檔案 (*.png, *.jpg, *.jpeg)"));
+    gtk_file_filter_add_pattern (filter_all, "*.png");
+    gtk_file_filter_add_pattern (filter_all, "*.PNG");
+    gtk_file_filter_add_pattern (filter_all, "*.jpg");
+    gtk_file_filter_add_pattern (filter_all, "*.JPG");
+    gtk_file_filter_add_pattern (filter_all, "*.jpeg");
+    gtk_file_filter_add_pattern (filter_all, "*.JPEG");
+    gtk_file_chooser_add_filter (GTK_FILE_CHOOSER (dialog), filter_all);
+
+    GtkFileFilter *filter_png = gtk_file_filter_new ();
+    gtk_file_filter_set_name (filter_png, _("PNG 圖片 (*.png)"));
+    gtk_file_filter_add_pattern (filter_png, "*.png");
+    gtk_file_filter_add_pattern (filter_png, "*.PNG");
+    gtk_file_chooser_add_filter (GTK_FILE_CHOOSER (dialog), filter_png);
+
+    GtkFileFilter *filter_jpg = gtk_file_filter_new ();
+    gtk_file_filter_set_name (filter_jpg, _("JPEG 圖片 (*.jpg, *.jpeg)"));
+    gtk_file_filter_add_pattern (filter_jpg, "*.jpg");
+    gtk_file_filter_add_pattern (filter_jpg, "*.JPG");
+    gtk_file_filter_add_pattern (filter_jpg, "*.jpeg");
+    gtk_file_filter_add_pattern (filter_jpg, "*.JPEG");
+    gtk_file_chooser_add_filter (GTK_FILE_CHOOSER (dialog), filter_jpg);
+
+    /* Live Preview */
+    GtkWidget *preview = gtk_image_new ();
+    gtk_file_chooser_set_preview_widget (GTK_FILE_CHOOSER (dialog), preview);
+    g_signal_connect (dialog, "update-preview", G_CALLBACK (file_chooser_update_preview_cb), preview);
+
+    gint response = gtk_dialog_run (GTK_DIALOG (dialog));
+    if (response == GTK_RESPONSE_ACCEPT) {
+        char *chosen_file = gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (dialog));
+        if (chosen_file) {
+            GError *err = NULL;
+            GdkPixbuf *pb = gdk_pixbuf_new_from_file (chosen_file, &err);
+            if (!pb) {
+                GtkWidget *err_dlg = gtk_message_dialog_new (
+                    GTK_WINDOW (dialog),
+                    GTK_DIALOG_MODAL,
+                    GTK_MESSAGE_ERROR,
+                    GTK_BUTTONS_OK,
+                    _("無法載入所選圖片檔案：%s"), err ? err->message : _("格式不符")
+                );
+                gtk_dialog_run (GTK_DIALOG (err_dlg));
+                gtk_widget_destroy (err_dlg);
+                if (err) g_error_free (err);
+            } else {
+                g_object_unref (pb);
+
+                /* Detect PNG vs JPG */
+                gboolean is_png = FALSE;
+                const char *dot = strrchr (chosen_file, '.');
+                if (dot && strcasecmp (dot, ".png") == 0) {
+                    is_png = TRUE;
+                }
+
+                /* Collect distinct directories from selected tracks */
+                GHashTable *dirs = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+
+                for (GList *l = tracks; l != NULL; l = l->next) {
+                    DB_playItem_t *it = (DB_playItem_t *)l->data;
+                    const char *u = deadbeef->pl_find_meta (it, ":URI");
+                    if (u && deadbeef->is_local_file (u)) {
+                        char *p = NULL;
+                        if (strncmp (u, "file://", 7) == 0) {
+                            p = g_filename_from_uri (u, NULL, NULL);
+                        } else {
+                            p = g_strdup (u);
+                        }
+                        if (p) {
+                            char *d = g_path_get_dirname (p);
+                            if (d) {
+                                g_hash_table_insert (dirs, d, GINT_TO_POINTER (1));
+                            }
+                            g_free (p);
+                        }
+                    }
+                }
+
+                GFile *src_file = g_file_new_for_path (chosen_file);
+                GHashTableIter iter;
+                gpointer key, val;
+                g_hash_table_iter_init (&iter, dirs);
+                int success_count = 0;
+
+                while (g_hash_table_iter_next (&iter, &key, &val)) {
+                    const char *target_dir = (const char *)key;
+
+                    char dest_cover[PATH_MAX];
+                    char dest_folder[PATH_MAX];
+                    char old_cover[PATH_MAX];
+                    char old_folder[PATH_MAX];
+
+                    if (is_png) {
+                        snprintf (dest_cover, sizeof (dest_cover), "%s/cover.png", target_dir);
+                        snprintf (dest_folder, sizeof (dest_folder), "%s/folder.png", target_dir);
+                        snprintf (old_cover, sizeof (old_cover), "%s/cover.jpg", target_dir);
+                        snprintf (old_folder, sizeof (old_folder), "%s/folder.jpg", target_dir);
+                    } else {
+                        snprintf (dest_cover, sizeof (dest_cover), "%s/cover.jpg", target_dir);
+                        snprintf (dest_folder, sizeof (dest_folder), "%s/folder.jpg", target_dir);
+                        snprintf (old_cover, sizeof (old_cover), "%s/cover.png", target_dir);
+                        snprintf (old_folder, sizeof (old_folder), "%s/folder.png", target_dir);
+                    }
+
+                    GFile *dst_c = g_file_new_for_path (dest_cover);
+                    GFile *dst_f = g_file_new_for_path (dest_folder);
+
+                    GError *copy_err = NULL;
+                    if (g_file_copy (src_file, dst_c, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, &copy_err)) {
+                        g_file_copy (src_file, dst_f, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, NULL);
+                        unlink (old_cover);
+                        unlink (old_folder);
+                        success_count++;
+                    } else if (copy_err) {
+                        g_error_free (copy_err);
+                    }
+
+                    g_object_unref (dst_c);
+                    g_object_unref (dst_f);
+                }
+
+                g_object_unref (src_file);
+                g_hash_table_destroy (dirs);
+
+                /* Invalidate DeaDBeeF artwork cache */
+                time_t now = time (NULL);
+                deadbeef->conf_set_int64 ("artwork.cache_reset_time", now);
+
+                ddb_artwork_plugin_t *art = (ddb_artwork_plugin_t *)deadbeef->plug_get_for_id ("artwork2");
+                if (art && art->reset) {
+                    art->reset ();
+                }
+
+                /* Notify playlist and Cover Flow */
+                deadbeef->sendmessage (DB_EV_PLAYLISTCHANGED, 0, DDB_PLAYLIST_CHANGE_CONTENT, 0);
+
+                /* Friendly confirmation dialog */
+                GtkWidget *done_dlg = gtk_message_dialog_new (
+                    NULL,
+                    GTK_DIALOG_MODAL,
+                    GTK_MESSAGE_INFO,
+                    GTK_BUTTONS_OK,
+                    _("封面圖片設定完成！\n已成功將封面圖片套用至 %d 個目錄（共 %d 首音軌）。"),
+                    success_count, num_tracks
+                );
+                gtk_window_set_title (GTK_WINDOW (done_dlg), _("Cover Art 設定成功"));
+                gtk_dialog_run (GTK_DIALOG (done_dlg));
+                gtk_widget_destroy (done_dlg);
+            }
+            g_free (chosen_file);
+        }
+    }
+
+    gtk_widget_destroy (dialog);
+
+    for (GList *l = tracks; l != NULL; l = l->next) {
+        deadbeef->pl_item_unref ((DB_playItem_t *)l->data);
+    }
+    g_list_free (tracks);
+    if (plt) {
+        deadbeef->plt_unref (plt);
+    }
+
+    return 0;
+}
+
 static int
 action_toggle_dark_theme (DB_plugin_action_t *act, void *userdata) {
     int current = deadbeef->conf_get_int ("gtkui.prefer_dark_theme", 0);
@@ -933,12 +1319,28 @@ action_toggle_dark_theme (DB_plugin_action_t *act, void *userdata) {
     return 0;
 }
 
+static DB_plugin_action_t set_album_title_action = {
+    .title = "批次更改專輯名稱 (Album Title)...",
+    .name = "coverflow_set_album_title",
+    .flags = DB_ACTION_SINGLE_TRACK | DB_ACTION_MULTIPLE_TRACKS | DB_ACTION_ADD_MENU,
+    .callback2 = action_set_album_title,
+    .next = NULL,
+};
+
+static DB_plugin_action_t set_cover_art_action = {
+    .title = "更改或插入封面圖片 (Cover Art)...",
+    .name = "coverflow_set_cover_art",
+    .flags = DB_ACTION_SINGLE_TRACK | DB_ACTION_MULTIPLE_TRACKS | DB_ACTION_ADD_MENU,
+    .callback2 = action_set_cover_art,
+    .next = &set_album_title_action,
+};
+
 static DB_plugin_action_t dark_theme_action = {
     .title = "View/Dark Theme",
     .name = "toggle_dark_theme",
     .flags = DB_ACTION_COMMON,
     .callback = action_toggle_dark_theme,
-    .next = NULL,
+    .next = &set_cover_art_action,
 };
 
 static DB_plugin_action_t *
