@@ -806,6 +806,18 @@ w_coverflow_message (ddb_gtkui_widget_t *base, uint32_t id, uintptr_t ctx, uint3
     return 0;
 }
 
+static void
+on_container_realize (GtkWidget *widget, gpointer user_data) {
+    GtkWidget *toplevel = gtk_widget_get_toplevel (widget);
+    if (toplevel && gtk_widget_is_toplevel (toplevel) && GTK_IS_WINDOW (toplevel)) {
+        int cur_w = 0, cur_h = 0;
+        gtk_window_get_size (GTK_WINDOW (toplevel), &cur_w, &cur_h);
+        if (cur_w < 1080) {
+            gtk_window_resize (GTK_WINDOW (toplevel), 1080, cur_h > 0 ? cur_h : 600);
+        }
+    }
+}
+
 static ddb_gtkui_widget_t *
 w_coverflow_create (void) {
     w_coverflow_t *w = calloc (1, sizeof (w_coverflow_t));
@@ -829,11 +841,13 @@ w_coverflow_create (void) {
     /* Overlay container: Hosts the GtkGLArea and overlays the album title directly floating above */
     w->container = gtk_overlay_new ();
     w->base.widget = w->container;
+    gtk_widget_set_size_request (w->container, 1080, 280);
+    g_signal_connect (w->container, "realize", G_CALLBACK (on_container_realize), NULL);
 
-    /* GtkGLArea 3D Viewport: Expands to fill available space */
+    /* GtkGLArea 3D Viewport: Expands to fill available space with minimum 1080px width */
     w->gl_area = gtk_gl_area_new ();
     gtk_widget_set_can_focus (w->gl_area, TRUE);
-    gtk_widget_set_size_request (w->gl_area, 300, 240);
+    gtk_widget_set_size_request (w->gl_area, 1080, 280);
     gtk_gl_area_set_has_depth_buffer (GTK_GL_AREA (w->gl_area), TRUE);
     gtk_container_add (GTK_CONTAINER (w->container), w->gl_area);
 

@@ -345,7 +345,7 @@ gl_coverflow_resize (gl_coverflow_renderer_t *r, int width, int height) {
 
     /* Camera view: slightly above ground, looking towards center */
     mat4_lookat (r->mat_view,
-                 0.0f, 0.98f, 4.7f,  /* eye position: slightly further back to capture wide view */
+                 0.0f, 0.98f, 4.8f,  /* eye position: adjusted for wide view */
                  0.0f, 0.82f, 0.0f,  /* target lookat */
                  0.0f, 1.0f,  0.0f); /* up vector */
 }
@@ -372,10 +372,10 @@ get_album_aspect_scale (const coverflow_album_t *al, float *out_sx, float *out_s
 
 static inline float
 get_coverflow_x_dist (float d) {
-    const float X1 = 1.40f;    /* Distance from center (0) to first side cover (d=1) */
-    const float S0 = 0.38f;    /* Initial spacing between covers near center */
-    const float Smin = 0.16f;  /* Minimum fixed spacing at distance */
-    const float T = 5.0f;      /* Distance range over which spacing gradually decreases */
+    const float X1 = 1.60f;    /* Distance from center (0) to first side cover (d=1) */
+    const float S0 = 0.58f;    /* Initial comfortable spacing between covers near center */
+    const float Smin = 0.35f;  /* Minimum fixed spacing at distance (uncrowded, non-dense) */
+    const float T = 5.0f;      /* Distance range over which spacing gradually transitions */
 
     if (d <= 0.0f) {
         return 0.0f;
