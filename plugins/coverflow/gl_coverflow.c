@@ -370,6 +370,12 @@ get_album_aspect_scale (const coverflow_album_t *al, float *out_sx, float *out_s
     }
 }
 
+static inline float
+get_coverflow_scale (float delta) {
+    float d = fabsf (delta);
+    return 0.45f + 0.55f / (1.0f + 0.55f * d);
+}
+
 static void
 draw_cover_quad (gl_coverflow_renderer_t *r, float x, float z, float angle_rad, float tint, GLuint tex_id, float sx, float sy) {
     float model[16];
@@ -462,6 +468,9 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
         coverflow_album_t *al = &mgr->albums[i];
         float sx, sy;
         get_album_aspect_scale (al, &sx, &sy);
+        float scale = get_coverflow_scale (delta);
+        sx *= scale;
+        sy *= scale;
         GLuint tex = al->texture_id ? al->texture_id : r->default_texture_id;
         draw_cover_quad (r, x, z, angle, tint, tex, sx, sy);
     }
@@ -490,6 +499,9 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
         coverflow_album_t *al = &mgr->albums[i];
         float sx, sy;
         get_album_aspect_scale (al, &sx, &sy);
+        float scale = get_coverflow_scale (delta);
+        sx *= scale;
+        sy *= scale;
         GLuint tex = al->texture_id ? al->texture_id : r->default_texture_id;
         draw_cover_quad (r, x, z, angle, tint, tex, sx, sy);
     }
@@ -505,6 +517,9 @@ gl_coverflow_render (gl_coverflow_renderer_t *r, album_manager_t *mgr, float cur
         coverflow_album_t *al = &mgr->albums[center_idx];
         float sx, sy;
         get_album_aspect_scale (al, &sx, &sy);
+        float scale = get_coverflow_scale (delta);
+        sx *= scale;
+        sy *= scale;
         GLuint tex = al->texture_id ? al->texture_id : r->default_texture_id;
         draw_cover_quad (r, x, z, angle, tint, tex, sx, sy);
     }
