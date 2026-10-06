@@ -48,8 +48,9 @@ album_manager_free_textures (album_manager_t *mgr) {
             mgr->albums[i].texture_id = 0;
         }
         if (mgr->albums[i].pending_image_path) {
-            free (mgr->albums[i].pending_image_path);
+            char *p = mgr->albums[i].pending_image_path;
             mgr->albums[i].pending_image_path = NULL;
+            free (p);
         }
         mgr->albums[i].texture_loaded = FALSE;
         mgr->albums[i].is_fetching = FALSE;
@@ -74,8 +75,9 @@ album_manager_clear (album_manager_t *mgr) {
                 al->rep_track = NULL;
             }
             if (al->pending_image_path) {
-                free (al->pending_image_path);
+                char *p = al->pending_image_path;
                 al->pending_image_path = NULL;
+                free (p);
             }
             if (al->texture_id != 0) {
                 album_manager_queue_delete_texture (mgr, al->texture_id);

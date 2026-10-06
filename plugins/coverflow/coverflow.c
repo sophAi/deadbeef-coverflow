@@ -137,8 +137,9 @@ on_texture_ready_in_main_thread (gpointer user_data) {
             idx >= 0 && idx < w->album_mgr.count) {
             coverflow_album_t *al = &w->album_mgr.albums[idx];
             if (al->pending_image_path) {
-                free (al->pending_image_path);
+                char *p = al->pending_image_path;
                 al->pending_image_path = NULL;
+                free (p);
             }
             if (data->image_path && data->image_path[0]) {
                 al->pending_image_path = data->image_path;
@@ -191,6 +192,13 @@ on_cover_query_callback (int error, ddb_cover_query_t *query, ddb_cover_info_t *
             }
         }
         free (data);
+    }
+
+    if (cover) {
+        ddb_artwork_plugin_t *art = (ddb_artwork_plugin_t *)deadbeef->plug_get_for_id ("artwork2");
+        if (art && art->cover_info_release) {
+            art->cover_info_release (cover);
+        }
     }
 
     if (query->track) {
@@ -301,8 +309,10 @@ on_gl_render (GtkGLArea *area, GdkGLContext *context, gpointer user_data) {
     for (int i = 0; i < w->album_mgr.count; i++) {
         coverflow_album_t *al = &w->album_mgr.albums[i];
         if (al->pending_image_path) {
+            char *p = al->pending_image_path;
+            al->pending_image_path = NULL;
             int tw = 0, th = 0;
-            GLuint tex = gl_coverflow_load_texture_from_file (al->pending_image_path, &tw, &th);
+            GLuint tex = gl_coverflow_load_texture_from_file (p, &tw, &th);
             if (tex) {
                 if (al->texture_id) {
                     album_manager_queue_delete_texture (&w->album_mgr, al->texture_id);
@@ -311,8 +321,7 @@ on_gl_render (GtkGLArea *area, GdkGLContext *context, gpointer user_data) {
                 al->tex_width = tw;
                 al->tex_height = th;
             }
-            free (al->pending_image_path);
-            al->pending_image_path = NULL;
+            free (p);
         }
     }
 
@@ -768,43 +777,151 @@ w_coverflow_destroy (ddb_gtkui_widget_t *base) {
     /* Note: Do NOT call free(w) here! DeaDBeeF gtkui's w_destroy() frees w. */
 }
 
-static int
-w_coverflow_message (ddb_gtkui_widget_t *base, uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
-    w_coverflow_t *w = (w_coverflow_t *)base;
-    if (!w) return 0;
+/* ---------------- Thread-Safe Dispatch to GTK Main Loop ---------------- */
 
-    switch (id) {
-    case DB_EV_PLAYLISTCHANGED:
-    case DB_EV_PLAYLISTSWITCHED:
-    case DB_EV_TRACKINFOCHANGED: {
-        ddb_playlist_t *plt = deadbeef->plt_get_curr ();
-        if (plt) {
-            if (w->artwork_plugin && w->artwork_source_id) {
-                w->artwork_plugin->cancel_queries_with_source_id (w->artwork_source_id);
-            }
-            w->playlist_version++;
-            album_manager_rebuild (&w->album_mgr, plt);
-            deadbeef->plt_unref (plt);
+typedef struct {
+    w_coverflow_t *w;
+    coverflow_lifecycle_t *lifecycle;
+    int playlist_version;
+} playlist_reload_data_t;
 
-            clamp_target_position (w);
-            update_info_labels (w);
-            if (w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
-                gtk_widget_queue_draw (w->gl_area);
+static gboolean
+on_playlist_reload_in_main_thread (gpointer user_data) {
+    playlist_reload_data_t *data = (playlist_reload_data_t *)user_data;
+
+    if (data->lifecycle && data->lifecycle->alive) {
+        w_coverflow_t *w = data->w;
+        /* Only reload if this request is still the most recent one */
+        if (data->playlist_version == w->playlist_version) {
+            ddb_playlist_t *plt = deadbeef->plt_get_curr ();
+            if (plt) {
+                if (w->artwork_plugin && w->artwork_source_id) {
+                    w->artwork_plugin->cancel_queries_with_source_id (w->artwork_source_id);
+                }
+                w->playlist_version++;
+                album_manager_rebuild (&w->album_mgr, plt);
+                deadbeef->plt_unref (plt);
+
+                clamp_target_position (w);
+                update_info_labels (w);
+                if (w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
+                    gtk_widget_queue_draw (w->gl_area);
+                }
             }
         }
-    } break;
+    }
 
-    case DB_EV_SONGSTARTED: {
-        ddb_playItem_t *track = deadbeef->streamer_get_playing_track_safe ();
-        if (track) {
-            int idx = deadbeef->pl_get_idx_of (track);
-            deadbeef->pl_item_unref (track);
+    if (data->lifecycle) {
+        data->lifecycle->ref_count--;
+        if (data->lifecycle->ref_count == 0) {
+            free (data->lifecycle);
+        }
+    }
+    free (data);
+    return G_SOURCE_REMOVE;
+}
+
+typedef struct {
+    w_coverflow_t *w;
+    coverflow_lifecycle_t *lifecycle;
+    ddb_playItem_t *track;
+} songstarted_data_t;
+
+static gboolean
+on_songstarted_in_main_thread (gpointer user_data) {
+    songstarted_data_t *data = (songstarted_data_t *)user_data;
+
+    if (data->lifecycle && data->lifecycle->alive) {
+        w_coverflow_t *w = data->w;
+        if (data->track) {
+            int idx = deadbeef->pl_get_idx_of (data->track);
             if (idx >= 0) {
                 int alb_idx = album_manager_find_album_for_track (&w->album_mgr, idx);
                 if (alb_idx >= 0) {
                     w->album_mgr.current_playing_album = alb_idx;
+                    if (w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
+                        gtk_widget_queue_draw (w->gl_area);
+                    }
                 }
             }
+        } else {
+            w->album_mgr.current_playing_album = -1;
+            if (w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
+                gtk_widget_queue_draw (w->gl_area);
+            }
+        }
+    }
+
+    if (data->track) {
+        deadbeef->pl_item_unref (data->track);
+    }
+    if (data->lifecycle) {
+        data->lifecycle->ref_count--;
+        if (data->lifecycle->ref_count == 0) {
+            free (data->lifecycle);
+        }
+    }
+    free (data);
+    return G_SOURCE_REMOVE;
+}
+
+static int
+w_coverflow_message (ddb_gtkui_widget_t *base, uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
+    w_coverflow_t *w = (w_coverflow_t *)base;
+    if (!w || !w->lifecycle || !w->lifecycle->alive) return 0;
+
+    switch (id) {
+    case DB_EV_PLAYLISTCHANGED:
+    case DB_EV_TRACKINFOCHANGED:
+        /* Ignore simple playlist selection changes to prevent unnecessary reloads and eliminate races */
+        if (p1 == DDB_PLAYLIST_CHANGE_SELECTION) {
+            return 0;
+        }
+        /* Fall through for playlist content or metadata changes */
+    case DB_EV_PLAYLISTSWITCHED: {
+        w->playlist_version++;
+        playlist_reload_data_t *rdata = malloc (sizeof (playlist_reload_data_t));
+        rdata->w = w;
+        rdata->lifecycle = w->lifecycle;
+        if (w->lifecycle) {
+            w->lifecycle->ref_count++;
+        }
+        rdata->playlist_version = w->playlist_version;
+        g_idle_add (on_playlist_reload_in_main_thread, rdata);
+    } break;
+
+    case DB_EV_SONGSTARTED: {
+        ddb_event_track_t *ev = (ddb_event_track_t *)ctx;
+        ddb_playItem_t *track = ev ? ev->track : NULL;
+        if (!track) {
+            track = deadbeef->streamer_get_playing_track_safe ();
+        } else {
+            deadbeef->pl_item_ref (track);
+        }
+        if (track) {
+            songstarted_data_t *sdata = malloc (sizeof (songstarted_data_t));
+            sdata->w = w;
+            sdata->lifecycle = w->lifecycle;
+            if (w->lifecycle) {
+                w->lifecycle->ref_count++;
+            }
+            sdata->track = track;
+            g_idle_add (on_songstarted_in_main_thread, sdata);
+        }
+    } break;
+
+    case DB_EV_SONGCHANGED: {
+        ddb_event_trackchange_t *ev = (ddb_event_trackchange_t *)ctx;
+        if (ev && !ev->to) {
+            /* Playback stopped */
+            songstarted_data_t *sdata = malloc (sizeof (songstarted_data_t));
+            sdata->w = w;
+            sdata->lifecycle = w->lifecycle;
+            if (w->lifecycle) {
+                w->lifecycle->ref_count++;
+            }
+            sdata->track = NULL;
+            g_idle_add (on_songstarted_in_main_thread, sdata);
         }
     } break;
     }
