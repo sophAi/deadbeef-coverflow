@@ -111,6 +111,15 @@ fi
 # Copy newly built Cover Flow plugin
 cp -f "${COVERFLOW_SO}" "${STAGING_DIR}/opt/${PACKAGE_NAME}/plugins/coverflow_gtk3.so"
 
+# Build and copy updated notify plugin
+if [ -d "${SCRIPT_DIR}/plugins/notify" ]; then
+    make -C "${SCRIPT_DIR}/plugins/notify" clean
+    make -C "${SCRIPT_DIR}/plugins/notify"
+    if [ -f "${SCRIPT_DIR}/plugins/notify/notify.so" ]; then
+        cp -f "${SCRIPT_DIR}/plugins/notify/notify.so" "${STAGING_DIR}/opt/${PACKAGE_NAME}/plugins/notify.so"
+    fi
+fi
+
 # Create /usr/bin/deadbeef-coverflow launcher script with GTK3 default
 cat << EOF > "${STAGING_DIR}/usr/bin/${PACKAGE_NAME}"
 #!/bin/sh

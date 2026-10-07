@@ -130,9 +130,18 @@ if [ ! -f "${TARGET_SO}" ]; then
 fi
 echo -e "${GREEN}Successfully compiled:${RESET} ${TARGET_SO}"
 
+# Compile notify plugin if available
+NOTIFY_DIR="${SCRIPT_DIR}/plugins/notify"
+NOTIFY_SO="${NOTIFY_DIR}/notify.so"
+if [ -d "${NOTIFY_DIR}" ]; then
+    echo -e "${BLUE}Compiling OSD Notify plugin...${RESET}"
+    make -C "${NOTIFY_DIR}" clean
+    make -C "${NOTIFY_DIR}"
+fi
+
 # 3. Install if requested
 if [ "$DO_INSTALL" = true ]; then
-    echo -e "\n${BOLD}[3/3] Installing plugin to:${RESET} ${INSTALL_DEST}"
+    echo -e "\n${BOLD}[3/3] Installing plugins to:${RESET} ${INSTALL_DEST}"
     if [ ! -d "${INSTALL_DEST}" ]; then
         if [ "$INSTALL_DEST" = "${USER_PLUGIN_DIR}" ]; then
             mkdir -p "${INSTALL_DEST}"
@@ -144,13 +153,19 @@ if [ "$DO_INSTALL" = true ]; then
 
     if [ -w "${INSTALL_DEST}" ]; then
         cp -v "${TARGET_SO}" "${INSTALL_DEST}/"
+        if [ -f "${NOTIFY_SO}" ]; then
+            cp -v "${NOTIFY_SO}" "${INSTALL_DEST}/"
+        fi
     else
         echo -e "${YELLOW}Destination requires elevated permissions, using sudo...${RESET}"
         sudo cp -v "${TARGET_SO}" "${INSTALL_DEST}/"
+        if [ -f "${NOTIFY_SO}" ]; then
+            sudo cp -v "${NOTIFY_SO}" "${INSTALL_DEST}/"
+        fi
     fi
 
     echo -e "\n${BOLD}${GREEN}✔ Installation complete!${RESET}"
-    echo -e "Plugin installed to: ${BOLD}${INSTALL_DEST}/$(basename "${TARGET_SO}")${RESET}"
+    echo -e "Plugins installed to: ${BOLD}${INSTALL_DEST}/${RESET}"
 else
     echo -e "\n${BOLD}[3/3] Skipping installation (--no-install specified).${RESET}"
     echo -e "Plugin binary available at: ${BOLD}${TARGET_SO}${RESET}"

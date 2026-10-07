@@ -19,6 +19,7 @@ libtool
 !Makefile.am
 !Makefile.in
 !plugins/coverflow/Makefile
+!plugins/notify/Makefile
 config.log
 config.status
 config.cache
