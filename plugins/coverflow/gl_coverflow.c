@@ -578,21 +578,25 @@ gl_coverflow_load_texture_from_file (const char *filepath, int *out_w, int *out_
         return 0;
     }
 
-    int width = gdk_pixbuf_get_width (pixbuf);
-    int height = gdk_pixbuf_get_height (pixbuf);
-    int n_channels = gdk_pixbuf_get_n_channels (pixbuf);
-    int rowstride = gdk_pixbuf_get_rowstride (pixbuf);
-    const guchar *pixels = gdk_pixbuf_get_pixels (pixbuf);
+    /* Convert to 32-bit RGBA to guarantee 4-byte pixel alignment and eliminate rowstride padding */
+    GdkPixbuf *rgba_pixbuf = NULL;
+    if (!gdk_pixbuf_get_has_alpha (pixbuf) || gdk_pixbuf_get_n_channels (pixbuf) != 4) {
+        rgba_pixbuf = gdk_pixbuf_add_alpha (pixbuf, FALSE, 0, 0, 0);
+    }
+    GdkPixbuf *target_pb = rgba_pixbuf ? rgba_pixbuf : pixbuf;
+
+    int width = gdk_pixbuf_get_width (target_pb);
+    int height = gdk_pixbuf_get_height (target_pb);
+    int rowstride = gdk_pixbuf_get_rowstride (target_pb);
+    const guchar *pixels = gdk_pixbuf_get_pixels (target_pb);
 
     glPixelStorei (GL_UNPACK_ALIGNMENT, 1);
-    glPixelStorei (GL_UNPACK_ROW_LENGTH, rowstride / n_channels);
-
-    GLenum format = (n_channels == 4) ? GL_RGBA : GL_RGB;
+    glPixelStorei (GL_UNPACK_ROW_LENGTH, rowstride / 4);
 
     GLuint tex = 0;
     glGenTextures (1, &tex);
     glBindTexture (GL_TEXTURE_2D, tex);
-    glTexImage2D (GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, pixels);
+    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 
     glGenerateMipmap (GL_TEXTURE_2D);
 
@@ -603,6 +607,9 @@ gl_coverflow_load_texture_from_file (const char *filepath, int *out_w, int *out_
 
     glPixelStorei (GL_UNPACK_ROW_LENGTH, 0);
 
+    if (rgba_pixbuf) {
+        g_object_unref (rgba_pixbuf);
+    }
     g_object_unref (pixbuf);
 
     if (out_w) *out_w = width;

@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include <ctype.h>
+#include <dirent.h>
 
 #include "../gtkui/gtkui_api.h"
 #include "../artwork/artwork.h"
@@ -750,6 +751,53 @@ on_gl_area_destroy (GtkWidget *widget, gpointer user_data) {
     w->gl_area = NULL;
 }
 
+/* ---------------- Thread-Safe Artwork Reload ---------------- */
+
+typedef struct {
+    w_coverflow_t *w;
+    coverflow_lifecycle_t *lifecycle;
+} artwork_reload_data_t;
+
+static gboolean
+on_artwork_reload_in_main_thread (gpointer user_data) {
+    artwork_reload_data_t *data = (artwork_reload_data_t *)user_data;
+    if (data->lifecycle && data->lifecycle->alive) {
+        w_coverflow_t *w = data->w;
+        if (w->artwork_plugin && w->artwork_source_id) {
+            w->artwork_plugin->cancel_queries_with_source_id (w->artwork_source_id);
+        }
+        w->playlist_version++;
+        album_manager_free_textures (&w->album_mgr);
+        if (w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
+            gtk_widget_queue_draw (w->gl_area);
+        }
+    }
+    if (data->lifecycle) {
+        data->lifecycle->ref_count--;
+        if (data->lifecycle->ref_count == 0) {
+            free (data->lifecycle);
+        }
+    }
+    free (data);
+    return G_SOURCE_REMOVE;
+}
+
+static void
+on_artwork_settings_did_change (ddb_artwork_listener_event_t event, void *user_data, int64_t p1, int64_t p2) {
+    w_coverflow_t *w = (w_coverflow_t *)user_data;
+    if (!w || !w->lifecycle || !w->lifecycle->alive) return;
+
+    if (event == DDB_ARTWORK_SETTINGS_DID_CHANGE) {
+        artwork_reload_data_t *adata = malloc (sizeof (artwork_reload_data_t));
+        adata->w = w;
+        adata->lifecycle = w->lifecycle;
+        if (w->lifecycle) {
+            w->lifecycle->ref_count++;
+        }
+        g_idle_add (on_artwork_reload_in_main_thread, adata);
+    }
+}
+
 static void
 w_coverflow_destroy (ddb_gtkui_widget_t *base) {
     w_coverflow_t *w = (w_coverflow_t *)base;
@@ -769,8 +817,13 @@ w_coverflow_destroy (ddb_gtkui_widget_t *base) {
         w->tick_callback_id = 0;
     }
 
-    if (w->artwork_plugin && w->artwork_source_id) {
-        w->artwork_plugin->cancel_queries_with_source_id (w->artwork_source_id);
+    if (w->artwork_plugin) {
+        if (w->artwork_plugin->remove_listener) {
+            w->artwork_plugin->remove_listener (on_artwork_settings_did_change, w);
+        }
+        if (w->artwork_source_id) {
+            w->artwork_plugin->cancel_queries_with_source_id (w->artwork_source_id);
+        }
     }
 
     album_manager_free (&w->album_mgr);
@@ -957,8 +1010,13 @@ w_coverflow_create (void) {
     album_manager_init (&w->album_mgr);
 
     w->artwork_plugin = (ddb_artwork_plugin_t *)deadbeef->plug_get_for_id ("artwork2");
-    if (w->artwork_plugin && w->artwork_plugin->allocate_source_id) {
-        w->artwork_source_id = w->artwork_plugin->allocate_source_id ();
+    if (w->artwork_plugin) {
+        if (w->artwork_plugin->allocate_source_id) {
+            w->artwork_source_id = w->artwork_plugin->allocate_source_id ();
+        }
+        if (w->artwork_plugin->add_listener) {
+            w->artwork_plugin->add_listener (on_artwork_settings_did_change, w);
+        }
     }
 
     /* Overlay container: Hosts the GtkGLArea and overlays the album title directly floating above */
@@ -1372,6 +1430,15 @@ action_set_cover_art (DB_plugin_action_t *act, ddb_action_context_t ctx) {
                         g_file_copy (src_file, dst_f, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, NULL);
                         unlink (old_cover);
                         unlink (old_folder);
+
+                        /* Also remove any legacy front.* / folder.* files so artwork2 doesn't prioritize an old image */
+                        char legacy_file[PATH_MAX];
+                        snprintf (legacy_file, sizeof (legacy_file), "%s/front.jpg", target_dir); unlink (legacy_file);
+                        snprintf (legacy_file, sizeof (legacy_file), "%s/front.jpeg", target_dir); unlink (legacy_file);
+                        snprintf (legacy_file, sizeof (legacy_file), "%s/front.png", target_dir); unlink (legacy_file);
+                        snprintf (legacy_file, sizeof (legacy_file), "%s/folder.jpeg", target_dir); unlink (legacy_file);
+                        snprintf (legacy_file, sizeof (legacy_file), "%s/cover.jpeg", target_dir); unlink (legacy_file);
+
                         success_count++;
                     } else if (copy_err) {
                         g_error_free (copy_err);
@@ -1384,16 +1451,60 @@ action_set_cover_art (DB_plugin_action_t *act, ddb_action_context_t ctx) {
                 g_object_unref (src_file);
                 g_hash_table_destroy (dirs);
 
-                /* Invalidate DeaDBeeF artwork cache */
-                time_t now = time (NULL);
-                deadbeef->conf_set_int64 ("artwork.cache_reset_time", now);
-
+                /* 1. Invalidate cache in artwork2 plugin */
                 ddb_artwork_plugin_t *art = (ddb_artwork_plugin_t *)deadbeef->plug_get_for_id ("artwork2");
-                if (art && art->reset) {
-                    art->reset ();
+                if (art) {
+                    if (art->plugin.plugin.get_actions && tracks) {
+                        DB_playItem_t *first_track = (DB_playItem_t *)tracks->data;
+                        DB_plugin_action_t *act = art->plugin.plugin.get_actions (first_track);
+                        while (act) {
+                            if (act->name && strcmp (act->name, "invalidate_playitem_cache") == 0) {
+                                if (act->callback2) {
+                                    act->callback2 (act, DDB_ACTION_CTX_SELECTION);
+                                }
+                                break;
+                            }
+                            act = act->next;
+                        }
+                    }
+                    if (art->reset) {
+                        art->reset ();
+                    }
                 }
 
-                /* Notify playlist and Cover Flow */
+                /* 2. Directly purge any cached cover files from ~/.cache/deadbeef/covers2 */
+                const char *user_cache_dir = g_get_user_cache_dir ();
+                if (user_cache_dir) {
+                    char covers_dir[PATH_MAX];
+                    snprintf (covers_dir, sizeof (covers_dir), "%s/deadbeef/covers2", user_cache_dir);
+                    DIR *dir = opendir (covers_dir);
+                    if (dir) {
+                        struct dirent *de;
+                        while ((de = readdir (dir)) != NULL) {
+                            if (de->d_name[0] == '.') continue;
+                            for (GList *l = tracks; l != NULL; l = l->next) {
+                                DB_playItem_t *it = (DB_playItem_t *)l->data;
+                                const char *alb = deadbeef->pl_find_meta (it, "album");
+                                const char *art_name = deadbeef->pl_find_meta (it, "artist");
+                                const char *uri = deadbeef->pl_find_meta (it, ":URI");
+                                const char *fn = uri ? strrchr (uri, '/') : NULL;
+                                if (fn) fn++;
+
+                                if ((alb && *alb && strstr (de->d_name, alb)) ||
+                                    (art_name && *art_name && strstr (de->d_name, art_name)) ||
+                                    (fn && *fn && strstr (de->d_name, fn))) {
+                                    char fullpath[PATH_MAX * 2];
+                                    snprintf (fullpath, sizeof (fullpath), "%s/%s", covers_dir, de->d_name);
+                                    unlink (fullpath);
+                                    break;
+                                }
+                            }
+                        }
+                        closedir (dir);
+                    }
+                }
+
+                /* 3. Notify playlist and Cover Flow */
                 deadbeef->sendmessage (DB_EV_PLAYLISTCHANGED, 0, DDB_PLAYLIST_CHANGE_CONTENT, 0);
 
                 /* Friendly confirmation dialog */
