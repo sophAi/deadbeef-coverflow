@@ -17,6 +17,9 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
+#include <X11/Xutil.h>
 #include "../../gettext.h"
 #include "../artwork/artwork.h"
 
@@ -251,6 +254,81 @@ append_int32_hint (DBusMessageIter *hints_iter, const char *hint_name, dbus_int3
     dbus_message_iter_close_container (hints_iter, &dict_entry);
 }
 
+static gboolean
+adjust_notification_window_pos (gpointer user_data) {
+    int target_y = GPOINTER_TO_INT (user_data);
+    if (target_y <= 0) {
+        return G_SOURCE_REMOVE;
+    }
+
+    Display *disp = XOpenDisplay (NULL);
+    if (!disp) {
+        return G_SOURCE_REMOVE;
+    }
+
+    Window root = DefaultRootWindow (disp);
+    Window root_ret, parent_ret;
+    Window *children = NULL;
+    unsigned int nchildren = 0;
+
+    if (XQueryTree (disp, root, &root_ret, &parent_ret, &children, &nchildren) && children) {
+        Atom net_wm_window_type = XInternAtom (disp, "_NET_WM_WINDOW_TYPE", False);
+        Atom net_wm_window_type_notification = XInternAtom (disp, "_NET_WM_WINDOW_TYPE_NOTIFICATION", False);
+
+        for (unsigned int i = 0; i < nchildren; i++) {
+            Window w = children[i];
+            XWindowAttributes attr;
+            if (XGetWindowAttributes (disp, w, &attr) && attr.map_state == IsViewable) {
+                Atom actual_type;
+                int actual_format;
+                unsigned long nitems = 0, bytes_after = 0;
+                unsigned char *prop = NULL;
+
+                int status = XGetWindowProperty (disp, w, net_wm_window_type, 0, 32, False,
+                                                 XA_ATOM, &actual_type, &actual_format,
+                                                 &nitems, &bytes_after, &prop);
+                gboolean is_notif = FALSE;
+                if (status == Success && prop && nitems > 0) {
+                    Atom *atoms = (Atom *)prop;
+                    for (unsigned long j = 0; j < nitems; j++) {
+                        if (atoms[j] == net_wm_window_type_notification) {
+                            is_notif = TRUE;
+                            break;
+                        }
+                    }
+                }
+                if (prop) {
+                    XFree (prop);
+                }
+
+                if (!is_notif) {
+                    XClassHint class_hint;
+                    if (XGetClassHint (disp, w, &class_hint)) {
+                        if ((class_hint.res_name && strstr (class_hint.res_name, "notification")) ||
+                            (class_hint.res_class && strstr (class_hint.res_class, "notification"))) {
+                            is_notif = TRUE;
+                        }
+                        if (class_hint.res_name) XFree (class_hint.res_name);
+                        if (class_hint.res_class) XFree (class_hint.res_class);
+                    }
+                }
+
+                if (is_notif) {
+                    /* If notification window is placed near the top (y < target_y), move it down to target_y */
+                    if (attr.y < target_y) {
+                        XMoveWindow (disp, w, attr.x, target_y);
+                        XFlush (disp);
+                    }
+                }
+            }
+        }
+        XFree (children);
+    }
+
+    XCloseDisplay (disp);
+    return G_SOURCE_REMOVE;
+}
+
 static dbus_uint32_t
 show_notification (DB_playItem_t *track, const char *image_filename, dbus_uint32_t replaces_id, int force) {
     if (!track) return replaces_id;
@@ -366,7 +444,17 @@ show_notification (DB_playItem_t *track, const char *image_filename, dbus_uint32
 
     dbus_message_iter_append_basic (&iter, DBUS_TYPE_INT32, &v_timeout);
 
-    return notify_send (msg, replaces_id);
+    dbus_uint32_t ret_id = notify_send (msg, replaces_id);
+
+    if (pos_y > 0) {
+        /* Schedule X11 window repositioning to handle daemons that ignore D-Bus position hints */
+        g_timeout_add (20, adjust_notification_window_pos, GINT_TO_POINTER (pos_y));
+        g_timeout_add (60, adjust_notification_window_pos, GINT_TO_POINTER (pos_y));
+        g_timeout_add (120, adjust_notification_window_pos, GINT_TO_POINTER (pos_y));
+        g_timeout_add (250, adjust_notification_window_pos, GINT_TO_POINTER (pos_y));
+    }
+
+    return ret_id;
 }
 
 typedef struct {
