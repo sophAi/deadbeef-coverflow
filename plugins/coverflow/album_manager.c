@@ -57,6 +57,31 @@ album_manager_free_textures (album_manager_t *mgr) {
     }
 }
 
+static void
+album_free_contents (album_manager_t *mgr, coverflow_album_t *al) {
+    if (!al) return;
+    free (al->album_key);
+    free (al->artist);
+    free (al->album);
+    free (al->year);
+    free (al->track_indices);
+    if (al->rep_track) {
+        deadbeef->pl_item_unref (al->rep_track);
+        al->rep_track = NULL;
+    }
+    if (al->pending_image_path) {
+        char *p = al->pending_image_path;
+        al->pending_image_path = NULL;
+        free (p);
+    }
+    if (al->texture_id != 0) {
+        if (mgr) {
+            album_manager_queue_delete_texture (mgr, al->texture_id);
+        }
+        al->texture_id = 0;
+    }
+}
+
 void
 album_manager_clear (album_manager_t *mgr) {
     if (!mgr) {
@@ -64,25 +89,7 @@ album_manager_clear (album_manager_t *mgr) {
     }
     if (mgr->albums) {
         for (int i = 0; i < mgr->count; i++) {
-            coverflow_album_t *al = &mgr->albums[i];
-            free (al->album_key);
-            free (al->artist);
-            free (al->album);
-            free (al->year);
-            free (al->track_indices);
-            if (al->rep_track) {
-                deadbeef->pl_item_unref (al->rep_track);
-                al->rep_track = NULL;
-            }
-            if (al->pending_image_path) {
-                char *p = al->pending_image_path;
-                al->pending_image_path = NULL;
-                free (p);
-            }
-            if (al->texture_id != 0) {
-                album_manager_queue_delete_texture (mgr, al->texture_id);
-                al->texture_id = 0;
-            }
+            album_free_contents (mgr, &mgr->albums[i]);
         }
         free (mgr->albums);
         mgr->albums = NULL;
@@ -134,9 +141,26 @@ album_manager_add_album (album_manager_t *mgr, const char *key, const char *arti
 
 void
 album_manager_rebuild (album_manager_t *mgr, ddb_playlist_t *plt) {
-    album_manager_clear (mgr);
+    if (!mgr) {
+        return;
+    }
+
+    /* Stash old albums to preserve already loaded textures across rebuilds */
+    coverflow_album_t *old_albums = mgr->albums;
+    int old_count = mgr->count;
+
+    mgr->albums = NULL;
+    mgr->count = 0;
+    mgr->capacity = 0;
 
     if (!plt) {
+        if (old_albums) {
+            for (int i = 0; i < old_count; i++) {
+                album_free_contents (mgr, &old_albums[i]);
+            }
+            free (old_albums);
+        }
+        mgr->current_playing_album = -1;
         return;
     }
 
@@ -145,6 +169,13 @@ album_manager_rebuild (album_manager_t *mgr, ddb_playlist_t *plt) {
     int total_tracks = deadbeef->plt_get_item_count (plt, PL_MAIN);
     if (total_tracks <= 0) {
         deadbeef->pl_unlock ();
+        if (old_albums) {
+            for (int i = 0; i < old_count; i++) {
+                album_free_contents (mgr, &old_albums[i]);
+            }
+            free (old_albums);
+        }
+        mgr->current_playing_album = -1;
         return;
     }
 
@@ -235,6 +266,45 @@ album_manager_rebuild (album_manager_t *mgr, ddb_playlist_t *plt) {
     g_hash_table_destroy (album_map);
 
     deadbeef->pl_unlock ();
+
+    /* Transfer textures and pending uploads from old albums matching by key */
+    if (old_albums) {
+        for (int i = 0; i < mgr->count; i++) {
+            coverflow_album_t *new_al = &mgr->albums[i];
+            for (int j = 0; j < old_count; j++) {
+                coverflow_album_t *old_al = &old_albums[j];
+                if (old_al->album_key && new_al->album_key &&
+                    strcmp (old_al->album_key, new_al->album_key) == 0) {
+                    new_al->texture_id = old_al->texture_id;
+                    new_al->tex_width = old_al->tex_width;
+                    new_al->tex_height = old_al->tex_height;
+                    new_al->texture_loaded = old_al->texture_loaded;
+                    new_al->pending_image_path = old_al->pending_image_path;
+
+                    /* Mark old album transferred so texture won't be deleted */
+                    old_al->texture_id = 0;
+                    old_al->pending_image_path = NULL;
+                    break;
+                }
+            }
+        }
+
+        /* Free remaining old albums (textures of albums no longer present will be queued for GL deletion) */
+        for (int j = 0; j < old_count; j++) {
+            album_free_contents (mgr, &old_albums[j]);
+        }
+        free (old_albums);
+    }
+
+    /* Update current playing album */
+    DB_playItem_t *playing_track = deadbeef->streamer_get_playing_track_safe ();
+    if (playing_track) {
+        int idx = deadbeef->pl_get_idx_of (playing_track);
+        deadbeef->pl_item_unref (playing_track);
+        mgr->current_playing_album = (idx >= 0) ? album_manager_find_album_for_track (mgr, idx) : -1;
+    } else {
+        mgr->current_playing_album = -1;
+    }
 }
 
 int

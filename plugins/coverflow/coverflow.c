@@ -634,6 +634,7 @@ on_button_press_event (GtkWidget *widget, GdkEventButton *event, gpointer user_d
 
     if (event->type == GDK_2BUTTON_PRESS && event->button == GDK_BUTTON_PRIMARY) {
         /* Double-click: Play the current center album! */
+        w->is_dragging = FALSE;
         int sel = (int)roundf (w->target_pos);
         play_selected_album (w, sel);
         return TRUE;
@@ -925,12 +926,15 @@ w_coverflow_message (ddb_gtkui_widget_t *base, uint32_t id, uintptr_t ctx, uint3
 
     switch (id) {
     case DB_EV_PLAYLISTCHANGED:
-    case DB_EV_TRACKINFOCHANGED:
-        /* Ignore simple playlist selection changes to prevent unnecessary reloads and eliminate races */
-        if (p1 == DDB_PLAYLIST_CHANGE_SELECTION) {
+        /* Ignore non-structural playlist events (selection, playqueue changes, search results, title)
+           to eliminate unnecessary reloads and prevent album covers from disappearing during playback */
+        if (p1 == DDB_PLAYLIST_CHANGE_SELECTION ||
+            p1 == DDB_PLAYLIST_CHANGE_PLAYQUEUE ||
+            p1 == DDB_PLAYLIST_CHANGE_SEARCHRESULT ||
+            p1 == DDB_PLAYLIST_CHANGE_TITLE) {
             return 0;
         }
-        /* Fall through for playlist content or metadata changes */
+        /* Fall through for genuine playlist content/addition/deletion/reorder */
     case DB_EV_PLAYLISTSWITCHED: {
         w->playlist_version++;
         playlist_reload_data_t *rdata = malloc (sizeof (playlist_reload_data_t));
