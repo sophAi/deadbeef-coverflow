@@ -31,6 +31,7 @@ autom4te.cache/
 /deadbeef
 /src/deadbeef
 *.deb
+*.mp3
 
 # Gettext compiled messages
 *.gmo

@@ -238,6 +238,19 @@ append_string_hint (DBusMessageIter *hints_iter, const char *hint_name, const ch
     dbus_message_iter_close_container (hints_iter, &dict_entry);
 }
 
+static void
+append_int32_hint (DBusMessageIter *hints_iter, const char *hint_name, dbus_int32_t val) {
+    DBusMessageIter dict_entry;
+    dbus_message_iter_open_container (hints_iter, DBUS_TYPE_DICT_ENTRY, NULL, &dict_entry);
+    dbus_message_iter_append_basic (&dict_entry, DBUS_TYPE_STRING, &hint_name);
+
+    DBusMessageIter value_variant;
+    dbus_message_iter_open_container (&dict_entry, DBUS_TYPE_VARIANT, "i", &value_variant);
+    dbus_message_iter_append_basic (&value_variant, DBUS_TYPE_INT32, &val);
+    dbus_message_iter_close_container (&dict_entry, &value_variant);
+    dbus_message_iter_close_container (hints_iter, &dict_entry);
+}
+
 static dbus_uint32_t
 show_notification (DB_playItem_t *track, const char *image_filename, dbus_uint32_t replaces_id, int force) {
     if (!track) return replaces_id;
@@ -307,7 +320,10 @@ show_notification (DB_playItem_t *track, const char *image_filename, dbus_uint32
     const char *v_iconname = has_cover_file ? image_filename : "deadbeef";
     const char *v_summary = title[0] ? title : "DeaDBeeF";
     const char *v_body = esc_content;
-    dbus_int32_t v_timeout = -1;
+
+    int timeout_sec = deadbeef->conf_get_int ("notify.timeout", 5);
+    dbus_int32_t v_timeout = (timeout_sec > 0) ? (timeout_sec * 1000) : -1;
+    dbus_int32_t pos_y = deadbeef->conf_get_int ("notify.pos_y", 48);
 
     DBusMessageIter iter, sub;
     dbus_message_iter_init_append (msg, &iter);
@@ -324,6 +340,11 @@ show_notification (DB_playItem_t *track, const char *image_filename, dbus_uint32
 
     /* Hints */
     dbus_message_iter_open_container (&iter, DBUS_TYPE_ARRAY, "{sv}", &sub);
+
+    /* Pass vertical position hint to avoid overlapping top panels */
+    if (pos_y >= 0) {
+        append_int32_hint (&sub, "y", pos_y);
+    }
 
     /* Pass both image-path and image_path for maximum desktop compatibility */
     if (has_cover_file) {
@@ -479,6 +500,8 @@ notify_disconnect (void) {
 
 static const char settings_dlg[] =
     "property \"Enable\" checkbox notify.enable 0;\n"
+    "property \"Notification duration (seconds)\" spinbtn[1,60,1] notify.timeout 5;\n"
+    "property \"Vertical offset / Y position (px)\" spinbtn[0,1000,5] notify.pos_y 48;\n"
     "property \"Notification title format\" entry notify.format_title_tf \"" NOTIFY_DEFAULT_TITLE "\";\n"
     "property \"Notification content format\" entry notify.format_content_tf \"" NOTIFY_DEFAULT_CONTENT "\";\n"
     "property \"Show album art\" checkbox notify.albumart 1;\n"
