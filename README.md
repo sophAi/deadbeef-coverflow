@@ -7,7 +7,7 @@
 
 **DeaDBeeF** 是一款在 Linux 上廣受推崇、極致輕量、啟動飛快且高度模組化的終極音樂播放器。
 
-本專案為 DeaDBeeF GTK3 介面深度整合了原生的 **3D OpenGL Cover Flow 視差專輯封面外掛**，重現如經典 iTunes 般華麗流暢的立體翻頁互動，並針對現代高解析度寬螢幕（1080p+）與深色主題（Dark Theme）進行了專屬的視覺架構重構與體驗優化。
+本專案為 DeaDBeeF GTK3 介面深度整合了原生的 **3D OpenGL Cover Flow 視差專輯封面外掛** 與專為 Linux Mint MATE 深度優化的 **OSD Notify 桌面快訊通知外掛**，重現如經典 iTunes 般華麗流暢的立體翻頁互動，並針對現代高解析度寬螢幕（1080p+）、深色主題（Dark Theme）以及多螢幕桌面環境進行了全方位的視覺架構重構與體驗優化。
 
 ---
 
@@ -21,8 +21,12 @@
 
 - 🚀 **原生 OpenGL 硬體加速渲染**
   基於 `GtkGLArea` 與 `libepoxy` 實作現代 OpenGL 渲染管線，具備 60 FPS 流暢物理慣性滑動與立體視差翻頁動畫。
-- 🖼️ **長寬比自動維持（Aspect Ratio Preservation）**
-  完美避免封面圖形拉伸或變形；支援各類非正方形封面，邊緣採用高質感透明漸變與深色底層無縫融合。
+- 🔄 **播放與清單選取即時雙向同步（Two-way Playback & Selection Sync）**
+  - **歌曲切換自動對焦**：當自動播放下一首、切換曲目或點選上一首/下一首時，Cover Flow 鏡頭自動平滑滑動並置中目前播放歌曲所屬的專輯。
+  - **清單選取即時跟隨**：在播放清單中單擊或移動游標選取不同歌曲時，3D 舞台立即同步滑動對齊該專輯，無須在龐大曲庫中手動翻找。
+  - **雙擊播放無縫流暢**：雙擊 3D 封面即刻播送，封面完全不閃爍、不短暫消失。
+- 🖼️ **長寬比自動維持與全彩支援（Aspect Ratio Preservation & TrueColor）**
+  完美避免封面圖形拉伸或變形；支援各類非正方形封面，邊緣採用高質感透明漸變與深色底層無縫融合，並徹底解決色相扭曲與裁切偏移問題。
 - 🏷️ **智慧專輯聚合（Smart Album Grouping）**
   智慧依據 `Album Title` 聚合曲目與專輯封面，多音軌或同名專輯自動歸整，杜絕重複圖示。
 - 🎯 **浮動標題抬頭顯示（HUD Overlay）**
@@ -37,6 +41,22 @@
   背景多執行緒非同步載入封面材質，即便面對數萬首歌曲的大型曲庫也能秒開且滑動不掉格。
 - 🎨 **播放清單右鍵快速批次編輯封面與專輯名稱**
   在播放清單中選取單首或多首曲目並按右鍵，即可使用「更改或插入封面圖片 (Cover Art)」與「批次更改專輯名稱 (Album Title)」，支援 PNG/JPG 圖檔即時預覽並自動更新 CoverFlow 3D 舞台呈現。
+
+---
+
+## 🔔 OSD Notify 桌面通知外掛增強 (Desktop Notification Plugin)
+
+專案內建經過現代化升級重構的 `notify` 外掛，針對 Linux Mint MATE、Cinnamon、XFCE 及各大 Linux 桌面環境進行了相容性與美化強化：
+
+- 🖼️ **Cover Art 縮圖支援**
+  同時傳遞 FreeDesktop Spec 1.1/1.2 標準之原始點陣圖數據 (`image_data`/`image-data`) 與檔案路徑 (`image_path`/`image-path`)，確保在 `mate-notification-daemon` 等通知守護行程中皆能完美顯示專輯封面縮圖。
+- ⏱️ **通知顯示時間自由調整 (Notification Duration)**
+  偏好設定提供 `1 ~ 60` 秒數值微調選項（預設 5 秒），時間到達自動淡出關閉，避免通知長時間殘留。
+- 📐 **X11 視窗強制定位攔截器 (Vertical Offset / Y Position)**
+  - **痛點解決**：在 Linux Mint MATE 等環境中，通知常駐程式原生忽略 D-Bus 的座標提示，且多螢幕下工作區計算容易將通知固定在頂部 `y = 6`，直接覆蓋並擋住頂部的 `mate-panel`。
+  - **智慧定位機制**：外掛內建 X11 視窗定位器，於通知彈出時精確偵測通知視窗並透過 `XMoveWindow` 將其平移至指定高度（預設 48 px，避開 31 px 面板）。
+- 🔤 **緊湊字型排版模式 (Use Small Font Size)**
+  可選取使用 `<small>` 標籤渲染通知內容，有效節省螢幕空間，呈現精緻視覺。
 
 ---
 
@@ -94,19 +114,19 @@ deadbeef-coverflow
 
 ---
 
-### 方法二：使用獨立腳本編譯 Cover Flow 外掛（適用現有 DeaDBeeF）
+### 方法二：使用獨立腳本編譯外掛（適用現有 DeaDBeeF）
 
-若您的系統上已經安裝了現有的 DeaDBeeF（例如透過 PPA、APT 或 Tarball 安裝），無需重新編譯整套播放器核心，只要使用獨立腳本編譯 Cover Flow 外掛本體即可：
+若您的系統上已經安裝了現有的 DeaDBeeF（例如透過 PPA、APT 或 Tarball 安裝），無需重新編譯整套播放器核心，只要使用獨立腳本編譯 Cover Flow 與 Notify 外掛本體即可：
 
 #### 1. 安裝編譯相依套件
 ```bash
 sudo apt update
-sudo apt install -y build-essential pkg-config libgtk-3-dev libepoxy-dev
+sudo apt install -y build-essential pkg-config libgtk-3-dev libepoxy-dev libdbus-1-dev libx11-dev libgdk-pixbuf2.0-dev
 ```
 
 #### 2. 執行獨立編譯腳本
 ```bash
-# 一鍵編譯並自動安裝至當前使用者的外掛目錄 (~/.local/lib/deadbeef)
+# 一鍵編譯 Cover Flow 與 Notify 外掛並自動安裝至當前使用者的外掛目錄 (~/.local/lib/deadbeef)
 ./build_plugin.sh
 ```
 
@@ -116,7 +136,7 @@ sudo apt install -y build-essential pkg-config libgtk-3-dev libepoxy-dev
   -i, --install          安裝外掛至使用者目錄 (~/.local/lib/deadbeef) [預設]
   -s, --system           安裝外掛至全系統目錄 (/usr/lib/deadbeef，需 root/sudo)
   -d, --dest <DIR>       安裝至自訂目錄
-  -n, --no-install       僅編譯產生 coverflow_gtk3.so，不執行複製
+  -n, --no-install       僅編譯產生 .so，不執行複製
   -c, --clean            清理編譯暫存檔
   -h, --help             顯示說明訊息
 ```
@@ -140,10 +160,9 @@ sudo make install
 
 ---
 
-## 💡 如何在 DeaDBeeF 中啟用 Cover Flow 元件
+## 💡 如何在 DeaDBeeF 中啟用 Cover Flow 元件與設定 Notify
 
-不論使用上述何種方式安裝，完成後請依照以下簡易步驟在介面中加入 Cover Flow：
-
+### 啟用 3D Cover Flow：
 1. **啟動播放器**：執行 `deadbeef` 或 `deadbeef-coverflow`。
 2. **進入設計模式**：在頂部主選單點選 **檢視 (View)** -> 勾選 **設計模式 (Design Mode)**。
 3. **新增 Cover Flow 元件**：
@@ -154,19 +173,32 @@ sudo make install
    - 點選 **編輯 (Edit)** -> **偏好設定 (Preferences)** -> **GUI** 或 **外觀 (Appearance)**。
    - 勾選深色主題選項，即可享受與 Cover Flow 一體化沉浸式純黑視覺。
 
+### 設定 OSD Notify 通知：
+1. 開啟 **編輯 (Edit)** -> **偏好設定 (Preferences)** -> 切換至 **外掛 (Plugins)** 分頁。
+2. 在外掛清單中點選 **OSD Notify** 並點擊下方 **設定 (Configure)** 按鈕。
+3. 可自由調整：
+   - **Notification duration (seconds)**：調整快訊停留時間（預設 5 秒）。
+   - **Vertical offset / Y position (px)**：調整垂直顯示座標（預設 48 px，避開面板）。
+   - **Show album art**：開啟/關閉專輯封面縮圖。
+   - **Use small font size**：切換為緊湊縮小字型。
+
 ---
 
 ## 📦 系統與相依需求 (Prerequisites)
 
-### 編譯 Cover Flow 外掛必備：
+### 編譯外掛必備：
 - **GCC / Clang** (支援 C99/C11)
 - **Make**
 - **pkg-config**
 - **GTK+ 3.0 開發檔** (`libgtk-3-dev >= 3.20`)
 - **Epoxy OpenGL 函式庫開發檔** (`libepoxy-dev >= 1.4`)
+- **D-Bus 開發檔** (`libdbus-1-dev >= 1.10`)
+- **X11 函式庫開發檔** (`libx11-dev`)
+- **GdkPixbuf 開發檔** (`libgdk-pixbuf-2.0-dev`)
 
 ### 執行期環境：
 - 支援 OpenGL 2.1+ / OpenGL 3.0+ 之顯示卡驅動程式（Intel、AMD、NVIDIA 均可）。
+- 支援 D-Bus 與 FreeDesktop 標準通知之桌面環境（MATE、Cinnamon、GNOME、XFCE、KDE 等）。
 
 ---
 
@@ -174,3 +206,4 @@ sudo make install
 
 - **DeaDBeeF 核心與基礎模組**：採用 [ZLIB License](COPYING)。
 - **Cover Flow 外掛元件**：採用 [GNU General Public License v2 (GPLv2)](COPYING.GPLv2)。
+- **OSD Notify 外掛元件**：採用 [GNU General Public License v2 (GPLv2)](COPYING.GPLv2)。
