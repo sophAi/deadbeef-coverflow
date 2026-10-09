@@ -90,6 +90,21 @@
 
 ---
 
+## 🖥️ 系統匣常駐與命令列視窗喚醒 (Tray Residency & CLI Activation)
+
+本專案提供基於 UNIX Domain Socket IPC 的 **原生 C 語言啟動器 (`deadbeef-coverflow`)**，完美支援 MATE Desktop / 系統匣常駐與視窗精準控制：
+
+| 執行指令 | 運作情境 | 行為說明 |
+| :--- | :--- | :--- |
+| `deadbeef-coverflow --show` | **已在背景常駐** | 透過原生 IPC 即刻叫出主視窗並置頂（`gtk_window_present`）。 |
+| `deadbeef-coverflow --show` | **尚未在背景執行** | 啟動播放器，同時保持常駐在 mate-panel 系統匣且**立即顯示主視窗**。 |
+| `deadbeef-coverflow`（無參數） | **開機自動啟動 / 終端執行** | 保持靜默常駐於 mate-panel 系統匣，**不顯示主視窗**。 |
+
+* **應用程式選單整合**：`deadbeef-coverflow.desktop` 預設採用 `Exec=deadbeef-coverflow --show %F`，從選單點擊即可隨時快速叫出主視窗。
+* **開機自動啟動整合**：`~/.config/autostart/deadbeef.desktop` 採用 `Exec=deadbeef-coverflow`，開機登入後自動常駐於系統匣，不干擾桌面。
+
+---
+
 ## 🛠️ 安裝與建置方式 (Installation & Build)
 
 本專案提供多種靈活的安裝與建置方式：
@@ -103,7 +118,10 @@
 # 1. 直接安裝預編譯 package
 sudo dpkg -i deadbeef-coverflow_1.10.3-1~mint22.3_amd64.deb
 
-# 2. 啟動播放器
+# 2. 啟動播放器（顯示主視窗並常駐系統匣）
+deadbeef-coverflow --show
+
+# 3. 靜默常駐於系統匣（不跳出主視窗，適用開機自動啟動）
 deadbeef-coverflow
 ```
 

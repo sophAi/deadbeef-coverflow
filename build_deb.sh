@@ -120,14 +120,9 @@ if [ -d "${SCRIPT_DIR}/plugins/notify" ]; then
     fi
 fi
 
-# Create /usr/bin/deadbeef-coverflow launcher script with GTK3 default
-cat << EOF > "${STAGING_DIR}/usr/bin/${PACKAGE_NAME}"
-#!/bin/sh
-# DeaDBeeF Cover Flow launcher with default GTK3 (GtkGLArea / Cover Flow support)
-export DEADBEEF_PLUGIN_DIR="/opt/${PACKAGE_NAME}/plugins"
-export LD_LIBRARY_PATH="/opt/${PACKAGE_NAME}/lib:\${LD_LIBRARY_PATH:-}"
-exec /opt/${PACKAGE_NAME}/deadbeef --gui GTK3 "\$@"
-EOF
+# Compile native C launcher for /usr/bin/deadbeef-coverflow
+echo "Compiling native C launcher (${PACKAGE_NAME})..."
+gcc -O2 "${SCRIPT_DIR}/src/launcher.c" -o "${STAGING_DIR}/usr/bin/${PACKAGE_NAME}"
 chmod 0755 "${STAGING_DIR}/usr/bin/${PACKAGE_NAME}"
 
 # Install Desktop file as deadbeef-coverflow.desktop

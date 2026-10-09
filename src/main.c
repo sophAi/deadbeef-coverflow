@@ -139,6 +139,7 @@ print_help (void) {
     fprintf (stdout, _ ("Usage: deadbeef [options] [--] [file(s)]\n"));
     fprintf (stdout, _ ("Options:\n"));
     fprintf (stdout, _ ("   --help  or  -h     Print help (this message) and exit\n"));
+    fprintf (stdout, _ ("   --show             Show/activate main player window\n"));
     fprintf (stdout, _ ("   --quit             Quit player\n"));
     fprintf (stdout, _ ("   --version          Print version info and exit\n"));
     fprintf (stdout, _ ("   --play             Start playback\n"));
@@ -397,6 +398,10 @@ server_exec_command_line (const char *cmdline, int len, char *sendback, int sbsi
         }
         else if (!strcmp (parg, "--quit")) {
             messagepump_push (DB_EV_TERMINATE, 0, 0, 0);
+        }
+        else if (!strcmp (parg, "--show") || !strcmp (parg, "--show-ui")) {
+            messagepump_push (DB_EV_ACTIVATED, 0, 0, 0);
+            return 0;
         }
         else if (!strcmp (parg, "--gui")) {
             // need to skip --gui here, it is handled in the client cmdline
