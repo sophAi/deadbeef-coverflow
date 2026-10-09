@@ -20,6 +20,7 @@
 #include <math.h>
 #include <unistd.h>
 #include <locale.h>
+#include <X11/Xlib.h>
 
 #include <mpv/client.h>
 #include "../gtkui/gtkui_api.h"
@@ -40,6 +41,7 @@ struct w_video_s {
     GtkWidget *video_area;       /* GtkDrawingArea for MPV X11 embedding */
     GtkWidget *cover_area;       /* GtkDrawingArea for CoverArt rendering */
     GtkWidget *fs_window;        /* Fullscreen GtkWindow */
+    GtkWidget *fs_cover_area;    /* Fullscreen CoverArt GtkDrawingArea */
 
     mpv_handle *mpv;
     gboolean mpv_inited;
@@ -135,6 +137,21 @@ schedule_cursor_hide (w_video_t *w) {
 }
 
 static gboolean
+on_fs_window_configure (GtkWidget *widget, GdkEventConfigure *event, gpointer user_data) {
+    w_video_t *w = (w_video_t *)user_data;
+    if (w && w->is_fullscreen && w->is_video && w->video_area && gtk_widget_get_realized (w->video_area)) {
+        GdkWindow *gdk_v = gtk_widget_get_window (w->video_area);
+        if (gdk_v) {
+            Display *dpy = GDK_WINDOW_XDISPLAY (gdk_v);
+            Window xv = GDK_WINDOW_XID (gdk_v);
+            XResizeWindow (dpy, xv, event->width, event->height);
+            XFlush (dpy);
+        }
+    }
+    return FALSE;
+}
+
+static gboolean
 do_toggle_fullscreen_idle (gpointer user_data) {
     w_video_t *w = (w_video_t *)user_data;
     if (!w) {
@@ -145,14 +162,35 @@ do_toggle_fullscreen_idle (gpointer user_data) {
     if (!w->is_fullscreen) {
         /* Enter Fullscreen */
         w->is_fullscreen = TRUE;
-
-        g_object_ref (w->event_box);
-        gtk_container_remove (GTK_CONTAINER (w->container), w->event_box);
-        gtk_container_add (GTK_CONTAINER (w->fs_window), w->event_box);
-        g_object_unref (w->event_box);
-
         gtk_window_fullscreen (GTK_WINDOW (w->fs_window));
         gtk_widget_show_all (w->fs_window);
+
+        if (w->is_video) {
+            if (w->fs_cover_area) {
+                gtk_widget_hide (w->fs_cover_area);
+            }
+            if (w->video_area && gtk_widget_get_realized (w->video_area)) {
+                GdkWindow *gdk_v = gtk_widget_get_window (w->video_area);
+                GdkWindow *gdk_fs = gtk_widget_get_window (w->fs_window);
+                if (gdk_v && gdk_fs) {
+                    Display *dpy = GDK_WINDOW_XDISPLAY (gdk_v);
+                    Window xv = GDK_WINDOW_XID (gdk_v);
+                    Window xfs = GDK_WINDOW_XID (gdk_fs);
+                    int fw = gdk_window_get_width (gdk_fs);
+                    int fh = gdk_window_get_height (gdk_fs);
+                    XReparentWindow (dpy, xv, xfs, 0, 0);
+                    XResizeWindow (dpy, xv, fw, fh);
+                    XMapWindow (dpy, xv);
+                    XFlush (dpy);
+                }
+            }
+        } else {
+            if (w->fs_cover_area) {
+                gtk_widget_show (w->fs_cover_area);
+                gtk_widget_queue_draw (w->fs_cover_area);
+            }
+        }
+
         schedule_cursor_hide (w);
     } else {
         /* Exit Fullscreen */
@@ -163,29 +201,33 @@ do_toggle_fullscreen_idle (gpointer user_data) {
         }
         restore_normal_cursor (w);
 
-        g_object_ref (w->event_box);
-        gtk_container_remove (GTK_CONTAINER (w->fs_window), w->event_box);
+        if (w->is_video) {
+            if (w->video_area && gtk_widget_get_realized (w->video_area) &&
+                w->event_box && gtk_widget_get_realized (w->event_box)) {
+                GdkWindow *gdk_v = gtk_widget_get_window (w->video_area);
+                GdkWindow *gdk_parent = gtk_widget_get_window (w->event_box);
+                if (gdk_v && gdk_parent) {
+                    Display *dpy = GDK_WINDOW_XDISPLAY (gdk_v);
+                    Window xv = GDK_WINDOW_XID (gdk_v);
+                    Window xp = GDK_WINDOW_XID (gdk_parent);
+                    GtkAllocation alloc;
+                    gtk_widget_get_allocation (w->video_area, &alloc);
+                    XReparentWindow (dpy, xv, xp, alloc.x, alloc.y);
+                    XResizeWindow (dpy, xv, alloc.width, alloc.height);
+                    XMapWindow (dpy, xv);
+                    XFlush (dpy);
+                }
+            }
+        }
+
         gtk_widget_hide (w->fs_window);
         gtk_window_unfullscreen (GTK_WINDOW (w->fs_window));
 
-        gtk_container_add (GTK_CONTAINER (w->container), w->event_box);
-        g_object_unref (w->event_box);
-        gtk_widget_show_all (w->container);
-    }
-
-    /* If video is embedded and MPV is initialized, update MPV window reference */
-    if (w->mpv && w->mpv_inited && w->video_area && gtk_widget_get_realized (w->video_area)) {
-        GdkWindow *gdk_win = gtk_widget_get_window (w->video_area);
-        if (gdk_win) {
-            int64_t wid = (int64_t)GDK_WINDOW_XID (gdk_win);
-            setlocale (LC_NUMERIC, "C");
-            mpv_set_option (w->mpv, "wid", MPV_FORMAT_INT64, &wid);
+        if (!w->is_video && w->cover_area) {
+            gtk_widget_queue_draw (w->cover_area);
         }
-    }
 
-    /* Redraw cover area if in audio mode */
-    if (!w->is_video && w->cover_area) {
-        gtk_widget_queue_draw (w->cover_area);
+        gtk_widget_queue_resize (w->container);
     }
 
     return G_SOURCE_REMOVE;
@@ -319,7 +361,12 @@ on_cover_loaded_main_thread (gpointer user_data) {
             data->w->cover_pixbuf = gdk_pixbuf_new_from_file (data->image_path, NULL);
             free (data->image_path);
         }
-        gtk_widget_queue_draw (data->w->cover_area);
+        if (data->w->cover_area) {
+            gtk_widget_queue_draw (data->w->cover_area);
+        }
+        if (data->w->fs_cover_area) {
+            gtk_widget_queue_draw (data->w->fs_cover_area);
+        }
     }
     free (data);
     return G_SOURCE_REMOVE;
@@ -428,6 +475,21 @@ update_playing_state (w_video_t *w) {
             w->cover_pixbuf = NULL;
         }
         gtk_widget_queue_draw (w->cover_area);
+        if (w->is_fullscreen) {
+            if (w->video_area && gtk_widget_get_realized (w->video_area)) {
+                GdkWindow *gdk_v = gtk_widget_get_window (w->video_area);
+                if (gdk_v) {
+                    Display *dpy = GDK_WINDOW_XDISPLAY (gdk_v);
+                    Window xv = GDK_WINDOW_XID (gdk_v);
+                    XUnmapWindow (dpy, xv);
+                    XFlush (dpy);
+                }
+            }
+            if (w->fs_cover_area) {
+                gtk_widget_show (w->fs_cover_area);
+                gtk_widget_queue_draw (w->fs_cover_area);
+            }
+        }
         return;
     }
 
@@ -448,8 +510,30 @@ update_playing_state (w_video_t *w) {
         gtk_widget_hide (w->cover_area);
         gtk_widget_show (w->video_area);
 
+        if (w->is_fullscreen) {
+            if (w->fs_cover_area) {
+                gtk_widget_hide (w->fs_cover_area);
+            }
+            if (w->video_area && gtk_widget_get_realized (w->video_area)) {
+                GdkWindow *gdk_v = gtk_widget_get_window (w->video_area);
+                GdkWindow *gdk_fs = gtk_widget_get_window (w->fs_window);
+                if (gdk_v && gdk_fs) {
+                    Display *dpy = GDK_WINDOW_XDISPLAY (gdk_v);
+                    Window xv = GDK_WINDOW_XID (gdk_v);
+                    Window xfs = GDK_WINDOW_XID (gdk_fs);
+                    int fw = gdk_window_get_width (gdk_fs);
+                    int fh = gdk_window_get_height (gdk_fs);
+                    XReparentWindow (dpy, xv, xfs, 0, 0);
+                    XResizeWindow (dpy, xv, fw, fh);
+                    XMapWindow (dpy, xv);
+                    XFlush (dpy);
+                }
+            }
+        }
+
         if (w->mpv && uri) {
             const char *cmd[] = { "loadfile", uri, "replace", NULL };
+            setlocale (LC_NUMERIC, "C");
             mpv_command_async (w->mpv, 0, cmd);
             mpv_set_property_string (w->mpv, "pause", "no");
 
@@ -458,6 +542,7 @@ update_playing_state (w_video_t *w) {
                 char pos_str[32];
                 snprintf (pos_str, sizeof (pos_str), "%f", pos);
                 const char *seek_cmd[] = { "seek", pos_str, "absolute+exact", NULL };
+                setlocale (LC_NUMERIC, "C");
                 mpv_command_async (w->mpv, 0, seek_cmd);
             }
         }
@@ -465,10 +550,27 @@ update_playing_state (w_video_t *w) {
         /* Audio Mode -> Show CoverArt */
         if (w->mpv) {
             const char *cmd[] = { "stop", NULL };
+            setlocale (LC_NUMERIC, "C");
             mpv_command_async (w->mpv, 0, cmd);
         }
         gtk_widget_hide (w->video_area);
         gtk_widget_show (w->cover_area);
+
+        if (w->is_fullscreen) {
+            if (w->video_area && gtk_widget_get_realized (w->video_area)) {
+                GdkWindow *gdk_v = gtk_widget_get_window (w->video_area);
+                if (gdk_v) {
+                    Display *dpy = GDK_WINDOW_XDISPLAY (gdk_v);
+                    Window xv = GDK_WINDOW_XID (gdk_v);
+                    XUnmapWindow (dpy, xv);
+                    XFlush (dpy);
+                }
+            }
+            if (w->fs_cover_area) {
+                gtk_widget_show (w->fs_cover_area);
+                gtk_widget_queue_draw (w->fs_cover_area);
+            }
+        }
 
         fetch_cover_for_track (w, track);
     }
@@ -546,11 +648,17 @@ w_video_destroy (ddb_gtkui_widget_t *base) {
     if (w->current_artist) free (w->current_artist);
 
     if (w->fs_window) {
-        if (w->is_fullscreen && w->event_box) {
-            g_object_ref (w->event_box);
-            gtk_container_remove (GTK_CONTAINER (w->fs_window), w->event_box);
-            gtk_container_add (GTK_CONTAINER (w->container), w->event_box);
-            g_object_unref (w->event_box);
+        if (w->is_fullscreen && w->video_area && gtk_widget_get_realized (w->video_area) &&
+            w->event_box && gtk_widget_get_realized (w->event_box)) {
+            GdkWindow *gdk_v = gtk_widget_get_window (w->video_area);
+            GdkWindow *gdk_parent = gtk_widget_get_window (w->event_box);
+            if (gdk_v && gdk_parent) {
+                Display *dpy = GDK_WINDOW_XDISPLAY (gdk_v);
+                Window xv = GDK_WINDOW_XID (gdk_v);
+                Window xp = GDK_WINDOW_XID (gdk_parent);
+                XReparentWindow (dpy, xv, xp, 0, 0);
+                XFlush (dpy);
+            }
         }
         gtk_widget_destroy (w->fs_window);
         w->fs_window = NULL;
@@ -636,21 +744,40 @@ w_video_create (void) {
     /* Video Drawing Area */
     w->video_area = gtk_drawing_area_new ();
     gtk_widget_set_size_request (w->video_area, 320, 180);
+    gtk_widget_add_events (w->video_area, GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK);
     g_signal_connect (w->video_area, "realize", G_CALLBACK (on_video_area_realize), w);
+    g_signal_connect (w->video_area, "button-press-event", G_CALLBACK (on_button_press_event), w);
+    g_signal_connect (w->video_area, "motion-notify-event", G_CALLBACK (on_motion_notify_event), w);
     gtk_box_pack_start (GTK_BOX (w->content_box), w->video_area, TRUE, TRUE, 0);
 
     /* CoverArt Drawing Area */
     w->cover_area = gtk_drawing_area_new ();
     gtk_widget_set_size_request (w->cover_area, 320, 180);
+    gtk_widget_add_events (w->cover_area, GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK);
     g_signal_connect (w->cover_area, "draw", G_CALLBACK (on_cover_area_draw), w);
+    g_signal_connect (w->cover_area, "button-press-event", G_CALLBACK (on_button_press_event), w);
+    g_signal_connect (w->cover_area, "motion-notify-event", G_CALLBACK (on_motion_notify_event), w);
     gtk_box_pack_start (GTK_BOX (w->content_box), w->cover_area, TRUE, TRUE, 0);
 
     /* Fullscreen dedicated window */
     w->fs_window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title (GTK_WINDOW (w->fs_window), "DeaDBeeF Video");
     gtk_window_set_decorated (GTK_WINDOW (w->fs_window), FALSE);
+    gtk_widget_realize (w->fs_window);
+    gtk_widget_add_events (w->fs_window, GDK_BUTTON_PRESS_MASK | GDK_KEY_PRESS_MASK | GDK_POINTER_MOTION_MASK);
+    g_signal_connect (w->fs_window, "button-press-event", G_CALLBACK (on_button_press_event), w);
     g_signal_connect (w->fs_window, "key-press-event", G_CALLBACK (on_key_press_event), w);
+    g_signal_connect (w->fs_window, "motion-notify-event", G_CALLBACK (on_motion_notify_event), w);
     g_signal_connect (w->fs_window, "delete-event", G_CALLBACK (on_fs_window_delete_event), w);
+    g_signal_connect (w->fs_window, "configure-event", G_CALLBACK (on_fs_window_configure), w);
+
+    /* Fullscreen CoverArt Drawing Area */
+    w->fs_cover_area = gtk_drawing_area_new ();
+    gtk_widget_add_events (w->fs_cover_area, GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK);
+    g_signal_connect (w->fs_cover_area, "draw", G_CALLBACK (on_cover_area_draw), w);
+    g_signal_connect (w->fs_cover_area, "button-press-event", G_CALLBACK (on_button_press_event), w);
+    g_signal_connect (w->fs_cover_area, "motion-notify-event", G_CALLBACK (on_motion_notify_event), w);
+    gtk_container_add (GTK_CONTAINER (w->fs_window), w->fs_cover_area);
 
     /* Initialize libmpv instance with C numeric locale */
     setlocale (LC_NUMERIC, "C");
