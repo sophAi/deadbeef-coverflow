@@ -60,6 +60,23 @@
 
 ---
 
+## 🎬 Video & CoverArt 播放外掛 (MP4 視訊與專輯封面播放元件)
+
+專案提供基於 `libmpv` 的 **GTK3 視訊與封面多功能播放元件 (`video_player`)**：
+
+- ⚡ **Nvidia NVDEC 專用硬體加速**
+  底層配置 `hwdec=nvdec,nvdec-copy,auto`，深度調用 Nvidia GPU NVDEC 解碼引擎，順暢播放 1080p / 4K MP4、MKV、WebM 等主流視訊格式，極致降低 CPU 負載。
+- 🎵 **雙重音效阻斷與精準 A/V 影音同步 (Zero Audio Conflict)**
+  外掛主動關閉 libmpv 音訊輸出軌（`aid=no`），所有音訊完整保留由 DeaDBeeF 音訊管線、DSP 等化器與音量控制輸出；外掛內部每 500ms 監聽時鐘位移，軟體級無縫校正視訊進度。
+- 🖼️ **非影片音樂檔自動呈現 CoverArt**
+  當播放非影片音樂檔（MP3、FLAC、WAV、AAC 等）時，視訊區域自動切換為高質感專輯封面視窗，支援長寬比維持縮放、立體陰影與置中排版。
+- 🖥️ **一鍵雙擊全螢幕放大 (Fullscreen Toggle)**
+  - **滑鼠雙擊**：在視訊或封面畫面上按滑鼠左鍵雙擊（Double Click），瞬間平滑放大至全螢幕。
+  - **快捷鍵支援**：支援 `F11` 或 `F` 鍵切換全螢幕，按 `Esc` 立即退回嵌入視窗。
+  - **游標自動隱藏**：進入全螢幕後，滑鼠靜止 2 秒自動隱藏游標，移動滑鼠即刻恢復。
+
+---
+
 ## 🎨 批次維護專輯封面與名稱 (Batch Cover Art & Album Title)
 
 為了讓您的音樂庫在 Cover Flow 3D 舞台中精確分類、完美呈現，本外掛為播放清單擴充了直覺的右鍵快捷選單：
@@ -199,6 +216,17 @@ sudo make install
    - **Vertical offset / Y position (px)**：調整垂直顯示座標（預設 48 px，避開面板）。
    - **Show album art**：開啟/關閉專輯封面縮圖。
    - **Use small font size**：切換為緊湊縮小字型。
+
+### 啟用 Video & Cover Player 視訊/封面元件：
+1. **進入設計模式**：在頂部主選單點選 **檢視 (View)** -> 勾選 **設計模式 (Design Mode)**。
+2. **新增元件**：
+   - 在主畫面任一分割視窗或空白處點擊滑鼠右鍵。
+   - 選擇 **插入新元件 (Insert New Widget)** -> 點選 **Video / Cover Player**。
+3. **退出並儲存佈局**：再次點選選單中的 **檢視 (View)** -> 取消勾選 **設計模式 (Design Mode)**。
+4. **享受極致影音與全螢幕體驗**：
+   - 播放 MP4 視訊：自動啟動 Nvidia NVDEC 硬體加速，零延遲輸出高畫質影片。
+   - 播放純音樂歌曲：自動呈現目前播放歌曲之專輯封面 CoverArt。
+   - 雙擊畫面或按 `F11` / `F` 鍵即可放大至全螢幕，按 `Esc` 鍵立即退回。
 
 ---
 

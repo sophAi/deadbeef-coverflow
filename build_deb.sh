@@ -120,6 +120,15 @@ if [ -d "${SCRIPT_DIR}/plugins/notify" ]; then
     fi
 fi
 
+# Build and copy Video & CoverArt player plugin
+if [ -d "${SCRIPT_DIR}/plugins/video" ]; then
+    make -C "${SCRIPT_DIR}/plugins/video" clean
+    make -C "${SCRIPT_DIR}/plugins/video"
+    if [ -f "${SCRIPT_DIR}/plugins/video/video_gtk3.so" ]; then
+        cp -f "${SCRIPT_DIR}/plugins/video/video_gtk3.so" "${STAGING_DIR}/opt/${PACKAGE_NAME}/plugins/video_gtk3.so"
+    fi
+fi
+
 # Compile native C launcher for /usr/bin/deadbeef-coverflow
 echo "Compiling native C launcher (${PACKAGE_NAME})..."
 gcc -O2 "${SCRIPT_DIR}/src/launcher.c" -o "${STAGING_DIR}/usr/bin/${PACKAGE_NAME}"
@@ -165,7 +174,7 @@ Version: ${VERSION}
 Architecture: ${ARCH}
 Maintainer: sophAi <clusterga@gmail.com>
 Installed-Size: ${INSTALLED_SIZE}
-Depends: libc6 (>= 2.34), libgtk-3-0t64 (>= 3.24.0) | libgtk-3-0, libepoxy0 (>= 1.4.3), libgl1, libasound2t64 | libasound2, libpulse0, zlib1g
+Depends: libc6 (>= 2.34), libgtk-3-0t64 (>= 3.24.0) | libgtk-3-0, libepoxy0 (>= 1.4.3), libgl1, libasound2t64 | libasound2, libpulse0, zlib1g, libmpv2
 Section: sound
 Priority: optional
 Homepage: https://github.com/sophAi/deadbeef-coverflow

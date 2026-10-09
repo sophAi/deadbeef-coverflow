@@ -139,6 +139,15 @@ if [ -d "${NOTIFY_DIR}" ]; then
     make -C "${NOTIFY_DIR}"
 fi
 
+# Compile video plugin if available
+VIDEO_DIR="${SCRIPT_DIR}/plugins/video"
+VIDEO_SO="${VIDEO_DIR}/video_gtk3.so"
+if [ -d "${VIDEO_DIR}" ]; then
+    echo -e "${BLUE}Compiling Video & Cover Player plugin...${RESET}"
+    make -C "${VIDEO_DIR}" clean
+    make -C "${VIDEO_DIR}"
+fi
+
 # 3. Install if requested
 if [ "$DO_INSTALL" = true ]; then
     echo -e "\n${BOLD}[3/3] Installing plugins to:${RESET} ${INSTALL_DEST}"
@@ -156,11 +165,17 @@ if [ "$DO_INSTALL" = true ]; then
         if [ -f "${NOTIFY_SO}" ]; then
             cp -v "${NOTIFY_SO}" "${INSTALL_DEST}/"
         fi
+        if [ -f "${VIDEO_SO}" ]; then
+            cp -v "${VIDEO_SO}" "${INSTALL_DEST}/"
+        fi
     else
         echo -e "${YELLOW}Destination requires elevated permissions, using sudo...${RESET}"
         sudo cp -v "${TARGET_SO}" "${INSTALL_DEST}/"
         if [ -f "${NOTIFY_SO}" ]; then
             sudo cp -v "${NOTIFY_SO}" "${INSTALL_DEST}/"
+        fi
+        if [ -f "${VIDEO_SO}" ]; then
+            sudo cp -v "${VIDEO_SO}" "${INSTALL_DEST}/"
         fi
     fi
 
