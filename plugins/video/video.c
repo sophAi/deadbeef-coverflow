@@ -19,6 +19,7 @@
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
+#include <locale.h>
 
 #include <mpv/client.h>
 #include "../gtkui/gtkui_api.h"
@@ -41,9 +42,11 @@ struct w_video_s {
     GtkWidget *fs_window;        /* Fullscreen GtkWindow */
 
     mpv_handle *mpv;
+    gboolean mpv_inited;
     gboolean is_video;
     gboolean is_fullscreen;
     gboolean is_paused;
+    gboolean toggle_pending;
 
     GdkPixbuf *cover_pixbuf;
     char *current_uri;
@@ -131,11 +134,13 @@ schedule_cursor_hide (w_video_t *w) {
     w->cursor_hide_timer_id = g_timeout_add (2000, hide_cursor_cb, w);
 }
 
-static void
-toggle_fullscreen (w_video_t *w) {
+static gboolean
+do_toggle_fullscreen_idle (gpointer user_data) {
+    w_video_t *w = (w_video_t *)user_data;
     if (!w) {
-        return;
+        return G_SOURCE_REMOVE;
     }
+    w->toggle_pending = FALSE;
 
     if (!w->is_fullscreen) {
         /* Enter Fullscreen */
@@ -168,14 +173,31 @@ toggle_fullscreen (w_video_t *w) {
         gtk_widget_show_all (w->container);
     }
 
-    /* If video is embedded, update MPV window reference */
-    if (w->mpv && w->video_area && gtk_widget_get_realized (w->video_area)) {
+    /* If video is embedded and MPV is initialized, update MPV window reference */
+    if (w->mpv && w->mpv_inited && w->video_area && gtk_widget_get_realized (w->video_area)) {
         GdkWindow *gdk_win = gtk_widget_get_window (w->video_area);
         if (gdk_win) {
             int64_t wid = (int64_t)GDK_WINDOW_XID (gdk_win);
+            setlocale (LC_NUMERIC, "C");
             mpv_set_option (w->mpv, "wid", MPV_FORMAT_INT64, &wid);
         }
     }
+
+    /* Redraw cover area if in audio mode */
+    if (!w->is_video && w->cover_area) {
+        gtk_widget_queue_draw (w->cover_area);
+    }
+
+    return G_SOURCE_REMOVE;
+}
+
+static void
+toggle_fullscreen (w_video_t *w) {
+    if (!w || w->toggle_pending) {
+        return;
+    }
+    w->toggle_pending = TRUE;
+    g_idle_add (do_toggle_fullscreen_idle, w);
 }
 
 /* ---------------- Event Handlers ---------------- */
@@ -454,6 +476,15 @@ update_playing_state (w_video_t *w) {
     deadbeef->pl_item_unref (track);
 }
 
+static gboolean
+on_fs_window_delete_event (GtkWidget *widget, GdkEvent *event, gpointer user_data) {
+    w_video_t *w = (w_video_t *)user_data;
+    if (w && w->is_fullscreen) {
+        toggle_fullscreen (w);
+    }
+    return TRUE;
+}
+
 static void
 on_video_area_realize (GtkWidget *widget, gpointer user_data) {
     w_video_t *w = (w_video_t *)user_data;
@@ -464,8 +495,15 @@ on_video_area_realize (GtkWidget *widget, gpointer user_data) {
     GdkWindow *gdk_win = gtk_widget_get_window (widget);
     if (gdk_win) {
         int64_t wid = (int64_t)GDK_WINDOW_XID (gdk_win);
-        mpv_set_option (w->mpv, "wid", MPV_FORMAT_INT64, &wid);
-        mpv_initialize (w->mpv);
+        setlocale (LC_NUMERIC, "C");
+        if (!w->mpv_inited) {
+            mpv_set_option (w->mpv, "wid", MPV_FORMAT_INT64, &wid);
+            if (mpv_initialize (w->mpv) >= 0) {
+                w->mpv_inited = TRUE;
+            }
+        } else {
+            mpv_set_option (w->mpv, "wid", MPV_FORMAT_INT64, &wid);
+        }
     }
 }
 
@@ -494,6 +532,7 @@ w_video_destroy (ddb_gtkui_widget_t *base) {
     }
 
     if (w->mpv) {
+        setlocale (LC_NUMERIC, "C");
         mpv_destroy (w->mpv);
         w->mpv = NULL;
     }
@@ -507,6 +546,12 @@ w_video_destroy (ddb_gtkui_widget_t *base) {
     if (w->current_artist) free (w->current_artist);
 
     if (w->fs_window) {
+        if (w->is_fullscreen && w->event_box) {
+            g_object_ref (w->event_box);
+            gtk_container_remove (GTK_CONTAINER (w->fs_window), w->event_box);
+            gtk_container_add (GTK_CONTAINER (w->container), w->event_box);
+            g_object_unref (w->event_box);
+        }
         gtk_widget_destroy (w->fs_window);
         w->fs_window = NULL;
     }
@@ -530,6 +575,7 @@ w_video_message (ddb_gtkui_widget_t *base, uint32_t id, uintptr_t ctx, uint32_t 
 
     case DB_EV_PAUSED:
         if (w->mpv && w->is_video) {
+            setlocale (LC_NUMERIC, "C");
             mpv_set_property_string (w->mpv, "pause", p1 ? "yes" : "no");
         }
         break;
@@ -542,6 +588,7 @@ w_video_message (ddb_gtkui_widget_t *base, uint32_t id, uintptr_t ctx, uint32_t 
                 char pos_str[32];
                 snprintf (pos_str, sizeof (pos_str), "%f", pos);
                 const char *cmd[] = { "seek", pos_str, "absolute+exact", NULL };
+                setlocale (LC_NUMERIC, "C");
                 mpv_command_async (w->mpv, 0, cmd);
             }
         }
@@ -573,6 +620,7 @@ w_video_create (void) {
     gtk_widget_set_can_focus (w->event_box, TRUE);
     gtk_widget_add_events (w->event_box,
                            GDK_BUTTON_PRESS_MASK |
+                           GDK_BUTTON_RELEASE_MASK |
                            GDK_POINTER_MOTION_MASK |
                            GDK_KEY_PRESS_MASK);
 
@@ -602,8 +650,10 @@ w_video_create (void) {
     gtk_window_set_title (GTK_WINDOW (w->fs_window), "DeaDBeeF Video");
     gtk_window_set_decorated (GTK_WINDOW (w->fs_window), FALSE);
     g_signal_connect (w->fs_window, "key-press-event", G_CALLBACK (on_key_press_event), w);
+    g_signal_connect (w->fs_window, "delete-event", G_CALLBACK (on_fs_window_delete_event), w);
 
-    /* Initialize libmpv instance */
+    /* Initialize libmpv instance with C numeric locale */
+    setlocale (LC_NUMERIC, "C");
     w->mpv = mpv_create ();
     if (w->mpv) {
         /* Rendering backend: GPU */
@@ -696,6 +746,7 @@ video_plugin_message (uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
 
 static int
 video_connect (void) {
+    setlocale (LC_NUMERIC, "C");
     gtkui_plugin = (ddb_gtkui_t *)deadbeef->plug_get_for_id (DDB_GTKUI_PLUGIN_ID);
     if (!gtkui_plugin) {
         return -1;
