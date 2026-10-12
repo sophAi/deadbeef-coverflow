@@ -31,7 +31,7 @@
 #include "../gtkui/gtkui_api.h"
 #include "../artwork/artwork.h"
 
-DB_functions_t *deadbeef;
+static DB_functions_t *deadbeef;
 static ddb_gtkui_t *gtkui_plugin;
 
 /* Forward declaration */
@@ -56,6 +56,7 @@ struct w_video_s {
 
     /* Control bar widgets */
     GtkWidget *btn_play;         /* Play / Pause button */
+    GtkWidget *img_play;         /* Play / Pause icon */
     GtkWidget *btn_stop;         /* Stop button */
     GtkWidget *btn_prev;         /* Previous track */
     GtkWidget *btn_next;         /* Next track */
@@ -64,6 +65,7 @@ struct w_video_s {
     GtkWidget *lbl_time_total;   /* Total duration label */
     GtkWidget *vol_btn;          /* Volume button */
     GtkWidget *btn_fs_toggle;    /* Windowed / Fullscreen toggle */
+    GtkWidget *img_fs_toggle;    /* Fullscreen toggle icon */
     GtkWidget *btn_dock;         /* Return / Dock back to main window */
 
     /* Player state */
@@ -147,6 +149,21 @@ is_video_file (const char *uri) {
             !strcasecmp (dot, "mpeg") || !strcasecmp (dot, "vob"));
 }
 
+/* ---------------- Helper: Icon Button Builder ---------------- */
+
+static GtkWidget *
+create_icon_button (const char *icon_name, int pixel_size, GtkWidget **out_img) {
+    GtkWidget *btn = gtk_button_new ();
+    gtk_widget_set_can_focus (btn, FALSE);
+    GtkWidget *img = gtk_image_new_from_icon_name (icon_name, GTK_ICON_SIZE_BUTTON);
+    gtk_image_set_pixel_size (GTK_IMAGE (img), pixel_size);
+    gtk_button_set_image (GTK_BUTTON (btn), img);
+    if (out_img) {
+        *out_img = img;
+    }
+    return btn;
+}
+
 /* ---------------- CSS Styling ---------------- */
 
 static void
@@ -162,28 +179,25 @@ apply_custom_css (void) {
         ".video-control-bar {"
         "  background: rgba(18, 18, 18, 0.95);"
         "  border-top: 1px solid #333333;"
-        "  padding: 4px 12px;"
+        "  padding: 4px 10px;"
         "}"
         ".video-control-bar button {"
         "  background: #282828;"
-        "  color: #f0f0f0;"
+        "  color: #eeeeee;"
         "  border: 1px solid #444444;"
         "  border-radius: 6px;"
-        "  padding: 0px 4px;"
+        "  padding: 2px 6px;"
         "  margin: 0px 1px;"
-        "  font-size: 38px;"
-        "  font-weight: bold;"
-        "  min-height: 48px;"
-        "  min-width: 52px;"
+        "  min-height: 38px;"
+        "  min-width: 44px;"
         "}"
         ".video-control-bar button:hover {"
-        "  background: #444444;"
+        "  background: #404040;"
         "  color: #ffffff;"
         "  border-color: #666666;"
         "}"
         ".video-control-bar button.btn-play {"
-        "  font-size: 42px;"
-        "  min-width: 64px;"
+        "  min-width: 52px;"
         "  background: #2a3c54;"
         "  border-color: #43648c;"
         "}"
@@ -192,13 +206,21 @@ apply_custom_css (void) {
         "  border-color: #5c84b8;"
         "}"
         ".video-control-bar button image {"
-        "  min-width: 38px;"
-        "  min-height: 38px;"
+        "  min-width: 28px;"
+        "  min-height: 28px;"
+        "}"
+        ".video-control-bar button.btn-play image {"
+        "  min-width: 30px;"
+        "  min-height: 30px;"
+        "}"
+        ".video-control-bar button.btn-volume image {"
+        "  min-width: 24px;"
+        "  min-height: 24px;"
         "}"
         ".video-control-bar label {"
         "  color: #d8d8d8;"
         "  font-family: Monospace, sans-serif;"
-        "  font-size: 13px;"
+        "  font-size: 16px;"
         "  font-weight: bold;"
         "  padding: 0 4px;"
         "}"
@@ -250,7 +272,7 @@ update_window_title (w_video_t *w) {
 
 static void
 update_play_button_state (w_video_t *w) {
-    if (!w || !w->btn_play) {
+    if (!w || !w->btn_play || !w->img_play) {
         return;
     }
     int state = DDB_PLAYBACK_STATE_STOPPED;
@@ -259,10 +281,12 @@ update_play_button_state (w_video_t *w) {
     }
 
     if (state == DDB_PLAYBACK_STATE_PLAYING) {
-        gtk_button_set_label (GTK_BUTTON (w->btn_play), "❚❚");
+        gtk_image_set_from_icon_name (GTK_IMAGE (w->img_play), "media-playback-pause-symbolic", GTK_ICON_SIZE_BUTTON);
+        gtk_image_set_pixel_size (GTK_IMAGE (w->img_play), 30);
         gtk_widget_set_tooltip_text (w->btn_play, "暫停 (Space)");
     } else {
-        gtk_button_set_label (GTK_BUTTON (w->btn_play), "▶");
+        gtk_image_set_from_icon_name (GTK_IMAGE (w->img_play), "media-playback-start-symbolic", GTK_ICON_SIZE_BUTTON);
+        gtk_image_set_pixel_size (GTK_IMAGE (w->img_play), 30);
         gtk_widget_set_tooltip_text (w->btn_play, "播放 (Space)");
     }
 }
@@ -291,20 +315,8 @@ play_pause_track (w_video_t *w) {
 
     if (state == DDB_PLAYBACK_STATE_PLAYING) {
         deadbeef->sendmessage (DB_EV_PAUSE, 0, 0, 0);
-    } else if (state == DDB_PLAYBACK_STATE_PAUSED) {
-        deadbeef->sendmessage (DB_EV_TOGGLE_PAUSE, 0, 0, 0);
     } else {
-        /* Currently STOPPED -> start playback of current or first track in playlist */
-        ddb_playlist_t *plt = deadbeef->plt_get_curr ();
-        int cur = -1;
-        if (plt) {
-            cur = deadbeef->plt_get_cursor (plt, PL_MAIN);
-            deadbeef->plt_unref (plt);
-        }
-        if (cur == -1) {
-            cur = 0;
-        }
-        deadbeef->sendmessage (DB_EV_PLAY_NUM, 0, cur, 0);
+        deadbeef->sendmessage (DB_EV_PLAY_CURRENT, 0, 0, 0);
     }
 }
 
@@ -420,8 +432,9 @@ enter_windowed_mode (w_video_t *w) {
     gtk_window_set_resizable (GTK_WINDOW (w->det_window), TRUE);
     update_window_title (w);
 
-    if (w->btn_fs_toggle) {
-        gtk_button_set_label (GTK_BUTTON (w->btn_fs_toggle), "⛶");
+    if (w->img_fs_toggle) {
+        gtk_image_set_from_icon_name (GTK_IMAGE (w->img_fs_toggle), "view-fullscreen-symbolic", GTK_ICON_SIZE_BUTTON);
+        gtk_image_set_pixel_size (GTK_IMAGE (w->img_fs_toggle), 28);
         gtk_widget_set_tooltip_text (w->btn_fs_toggle, "全螢幕 (F11 或 雙擊)");
     }
 
@@ -483,8 +496,9 @@ enter_fullscreen_mode (w_video_t *w) {
     gtk_window_set_decorated (GTK_WINDOW (w->det_window), FALSE);
     gtk_window_fullscreen (GTK_WINDOW (w->det_window));
 
-    if (w->btn_fs_toggle) {
-        gtk_button_set_label (GTK_BUTTON (w->btn_fs_toggle), "❐");
+    if (w->img_fs_toggle) {
+        gtk_image_set_from_icon_name (GTK_IMAGE (w->img_fs_toggle), "view-restore-symbolic", GTK_ICON_SIZE_BUTTON);
+        gtk_image_set_pixel_size (GTK_IMAGE (w->img_fs_toggle), 28);
         gtk_widget_set_tooltip_text (w->btn_fs_toggle, "視窗化 (F11, Esc 或 雙擊)");
     }
 
@@ -991,8 +1005,15 @@ fetch_cover_for_track (w_video_t *w, DB_playItem_t *track) {
 static gboolean
 periodic_timer_cb (gpointer user_data) {
     w_video_t *w = (w_video_t *)user_data;
-    if (!w) {
+    if (!w || !deadbeef) {
         return G_SOURCE_CONTINUE;
+    }
+
+    g_mutex_lock (&widgets_mutex);
+    gboolean found = (g_list_find (active_widgets, w) != NULL);
+    g_mutex_unlock (&widgets_mutex);
+    if (!found) {
+        return G_SOURCE_REMOVE;
     }
 
     float pos = deadbeef->streamer_get_playpos ();
@@ -1432,7 +1453,7 @@ w_video_create (void) {
 
     /* 3. Control Bar at bottom of detached window */
     w->control_bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_widget_set_size_request (w->control_bar, -1, 58);
+    gtk_widget_set_size_request (w->control_bar, -1, 50);
     gtk_widget_add_events (w->control_bar, GDK_POINTER_MOTION_MASK);
     g_signal_connect (w->control_bar, "motion-notify-event", G_CALLBACK (on_motion_notify_event), w);
 
@@ -1441,8 +1462,7 @@ w_video_create (void) {
     gtk_box_pack_start (GTK_BOX (w->det_main_box), w->control_bar, FALSE, FALSE, 0);
 
     /* Play / Pause button */
-    w->btn_play = gtk_button_new_with_label ("▶");
-    gtk_widget_set_can_focus (w->btn_play, FALSE);
+    w->btn_play = create_icon_button ("media-playback-start-symbolic", 30, &w->img_play);
     GtkStyleContext *play_ctx = gtk_widget_get_style_context (w->btn_play);
     gtk_style_context_add_class (play_ctx, "btn-play");
     gtk_widget_set_tooltip_text (w->btn_play, "播放 / 暫停 (Space)");
@@ -1450,22 +1470,19 @@ w_video_create (void) {
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_play, FALSE, FALSE, 2);
 
     /* Stop button */
-    w->btn_stop = gtk_button_new_with_label ("⏹");
-    gtk_widget_set_can_focus (w->btn_stop, FALSE);
+    w->btn_stop = create_icon_button ("media-playback-stop-symbolic", 28, NULL);
     gtk_widget_set_tooltip_text (w->btn_stop, "停止 (Stop)");
     g_signal_connect (w->btn_stop, "clicked", G_CALLBACK (on_btn_stop_clicked), w);
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_stop, FALSE, FALSE, 2);
 
     /* Previous button */
-    w->btn_prev = gtk_button_new_with_label ("⏮");
-    gtk_widget_set_can_focus (w->btn_prev, FALSE);
+    w->btn_prev = create_icon_button ("media-skip-backward-symbolic", 28, NULL);
     gtk_widget_set_tooltip_text (w->btn_prev, "上一首 (Previous)");
     g_signal_connect (w->btn_prev, "clicked", G_CALLBACK (on_btn_prev_clicked), w);
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_prev, FALSE, FALSE, 2);
 
     /* Next button */
-    w->btn_next = gtk_button_new_with_label ("⏭");
-    gtk_widget_set_can_focus (w->btn_next, FALSE);
+    w->btn_next = create_icon_button ("media-skip-forward-symbolic", 28, NULL);
     gtk_widget_set_tooltip_text (w->btn_next, "下一首 (Next)");
     g_signal_connect (w->btn_next, "clicked", G_CALLBACK (on_btn_next_clicked), w);
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_next, FALSE, FALSE, 2);
@@ -1490,10 +1507,11 @@ w_video_create (void) {
     /* Volume button */
     w->vol_btn = gtk_volume_button_new ();
     gtk_widget_set_can_focus (w->vol_btn, FALSE);
+    gtk_style_context_add_class (gtk_widget_get_style_context (w->vol_btn), "btn-volume");
     gtk_widget_set_tooltip_text (w->vol_btn, "音量控制 (上下方向鍵)");
     GtkWidget *vol_img = gtk_bin_get_child (GTK_BIN (w->vol_btn));
     if (GTK_IS_IMAGE (vol_img)) {
-        gtk_image_set_pixel_size (GTK_IMAGE (vol_img), 38);
+        gtk_image_set_pixel_size (GTK_IMAGE (vol_img), 24);
     }
     w->updating_volume = TRUE;
     gtk_scale_button_set_value (GTK_SCALE_BUTTON (w->vol_btn), (double)deadbeef->volume_get_amp ());
@@ -1502,15 +1520,13 @@ w_video_create (void) {
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->vol_btn, FALSE, FALSE, 2);
 
     /* Windowed / Fullscreen toggle button */
-    w->btn_fs_toggle = gtk_button_new_with_label ("⛶");
-    gtk_widget_set_can_focus (w->btn_fs_toggle, FALSE);
+    w->btn_fs_toggle = create_icon_button ("view-fullscreen-symbolic", 28, &w->img_fs_toggle);
     gtk_widget_set_tooltip_text (w->btn_fs_toggle, "全螢幕 / 視窗化切換 (F11)");
     g_signal_connect (w->btn_fs_toggle, "clicked", G_CALLBACK (on_btn_fs_toggle_clicked), w);
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_fs_toggle, FALSE, FALSE, 2);
 
     /* Dock button */
-    w->btn_dock = gtk_button_new_with_label ("⤓");
-    gtk_widget_set_can_focus (w->btn_dock, FALSE);
+    w->btn_dock = create_icon_button ("go-down-symbolic", 28, NULL);
     gtk_widget_set_tooltip_text (w->btn_dock, "還原嵌入主視窗 (Esc)");
     g_signal_connect (w->btn_dock, "clicked", G_CALLBACK (on_btn_dock_clicked), w);
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_dock, FALSE, FALSE, 2);
@@ -1547,6 +1563,11 @@ w_video_create (void) {
         w->artwork_source_id = w->artwork_plugin->allocate_source_id ();
     }
 
+    /* Register to global widget list thread-safely */
+    g_mutex_lock (&widgets_mutex);
+    active_widgets = g_list_append (active_widgets, w);
+    g_mutex_unlock (&widgets_mutex);
+
     /* Start periodic A/V sync & progress timer (200ms) */
     w->sync_timer_id = g_timeout_add (200, periodic_timer_cb, w);
 
@@ -1554,11 +1575,6 @@ w_video_create (void) {
     gtk_widget_show (w->cover_area);
     gtk_widget_hide (w->video_area);
     gtk_widget_show_all (w->container);
-
-    /* Register to global widget list thread-safely */
-    g_mutex_lock (&widgets_mutex);
-    active_widgets = g_list_append (active_widgets, w);
-    g_mutex_unlock (&widgets_mutex);
 
     /* Check current playing track */
     update_playing_state (w);
