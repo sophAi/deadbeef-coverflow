@@ -162,27 +162,28 @@ apply_custom_css (void) {
         ".video-control-bar {"
         "  background: rgba(18, 18, 18, 0.95);"
         "  border-top: 1px solid #333333;"
-        "  padding: 6px 14px;"
+        "  padding: 4px 12px;"
         "}"
         ".video-control-bar button {"
         "  background: #282828;"
         "  color: #f0f0f0;"
         "  border: 1px solid #444444;"
         "  border-radius: 6px;"
-        "  padding: 4px 10px;"
-        "  font-size: 20px;"
+        "  padding: 0px 4px;"
+        "  margin: 0px 1px;"
+        "  font-size: 38px;"
         "  font-weight: bold;"
-        "  min-height: 40px;"
-        "  min-width: 48px;"
+        "  min-height: 48px;"
+        "  min-width: 52px;"
         "}"
         ".video-control-bar button:hover {"
-        "  background: #404040;"
+        "  background: #444444;"
         "  color: #ffffff;"
         "  border-color: #666666;"
         "}"
         ".video-control-bar button.btn-play {"
-        "  font-size: 24px;"
-        "  min-width: 58px;"
+        "  font-size: 42px;"
+        "  min-width: 64px;"
         "  background: #2a3c54;"
         "  border-color: #43648c;"
         "}"
@@ -191,8 +192,8 @@ apply_custom_css (void) {
         "  border-color: #5c84b8;"
         "}"
         ".video-control-bar button image {"
-        "  min-width: 22px;"
-        "  min-height: 22px;"
+        "  min-width: 38px;"
+        "  min-height: 38px;"
         "}"
         ".video-control-bar label {"
         "  color: #d8d8d8;"
@@ -273,6 +274,37 @@ update_volume_state (w_video_t *w) {
         float amp = deadbeef->volume_get_amp ();
         gtk_scale_button_set_value (GTK_SCALE_BUTTON (w->vol_btn), (double)amp);
         w->updating_volume = FALSE;
+    }
+}
+
+/* ---------------- Playback Actions ---------------- */
+
+static void
+play_pause_track (w_video_t *w) {
+    if (!deadbeef) {
+        return;
+    }
+    int state = DDB_PLAYBACK_STATE_STOPPED;
+    if (deadbeef->get_output ()) {
+        state = deadbeef->get_output ()->state ();
+    }
+
+    if (state == DDB_PLAYBACK_STATE_PLAYING) {
+        deadbeef->sendmessage (DB_EV_PAUSE, 0, 0, 0);
+    } else if (state == DDB_PLAYBACK_STATE_PAUSED) {
+        deadbeef->sendmessage (DB_EV_TOGGLE_PAUSE, 0, 0, 0);
+    } else {
+        /* Currently STOPPED -> start playback of current or first track in playlist */
+        ddb_playlist_t *plt = deadbeef->plt_get_curr ();
+        int cur = -1;
+        if (plt) {
+            cur = deadbeef->plt_get_cursor (plt, PL_MAIN);
+            deadbeef->plt_unref (plt);
+        }
+        if (cur == -1) {
+            cur = 0;
+        }
+        deadbeef->sendmessage (DB_EV_PLAY_NUM, 0, cur, 0);
     }
 }
 
@@ -608,7 +640,7 @@ on_key_press_event (GtkWidget *widget, GdkEventKey *event, gpointer user_data) {
     }
 
     if (event->keyval == GDK_KEY_space) {
-        deadbeef->sendmessage (DB_EV_TOGGLE_PAUSE, 0, 0, 0);
+        play_pause_track (w);
         return TRUE;
     }
 
@@ -683,8 +715,8 @@ on_motion_notify_event (GtkWidget *widget, GdkEventMotion *event, gpointer user_
 
         double dist_from_bottom = (double)(wy + wh) - event->y_root;
 
-        /* Only show control bar if mouse is near bottom (<= 90px) */
-        if (dist_from_bottom <= 90.0) {
+        /* Only show control bar if mouse is near bottom (<= 100px) */
+        if (dist_from_bottom <= 100.0) {
             if (w->control_bar && !gtk_widget_get_visible (w->control_bar)) {
                 gtk_widget_show (w->control_bar);
             }
@@ -733,7 +765,8 @@ on_det_window_delete_event (GtkWidget *widget, GdkEvent *event, gpointer user_da
 
 static void
 on_btn_play_clicked (GtkButton *btn, gpointer user_data) {
-    deadbeef->sendmessage (DB_EV_TOGGLE_PAUSE, 0, 0, 0);
+    w_video_t *w = (w_video_t *)user_data;
+    play_pause_track (w);
 }
 
 static void
@@ -1399,7 +1432,7 @@ w_video_create (void) {
 
     /* 3. Control Bar at bottom of detached window */
     w->control_bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_widget_set_size_request (w->control_bar, -1, 54);
+    gtk_widget_set_size_request (w->control_bar, -1, 58);
     gtk_widget_add_events (w->control_bar, GDK_POINTER_MOTION_MASK);
     g_signal_connect (w->control_bar, "motion-notify-event", G_CALLBACK (on_motion_notify_event), w);
 
@@ -1458,6 +1491,10 @@ w_video_create (void) {
     w->vol_btn = gtk_volume_button_new ();
     gtk_widget_set_can_focus (w->vol_btn, FALSE);
     gtk_widget_set_tooltip_text (w->vol_btn, "音量控制 (上下方向鍵)");
+    GtkWidget *vol_img = gtk_bin_get_child (GTK_BIN (w->vol_btn));
+    if (GTK_IS_IMAGE (vol_img)) {
+        gtk_image_set_pixel_size (GTK_IMAGE (vol_img), 38);
+    }
     w->updating_volume = TRUE;
     gtk_scale_button_set_value (GTK_SCALE_BUTTON (w->vol_btn), (double)deadbeef->volume_get_amp ());
     w->updating_volume = FALSE;
