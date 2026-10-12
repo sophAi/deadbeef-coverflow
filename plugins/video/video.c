@@ -5,6 +5,10 @@
  * Displays high-quality CoverArt when playing non-video music files.
  * Features Windowed mode with draggable, resizable window and playback controls,
  * as well as smooth Fullscreen toggle via double-click, F11, or F key.
+ *
+ * Fullscreen mode automatically hides the control bar and only reveals it when
+ * the mouse hovers near the bottom of the screen.
+ * Left/Right keys control playback progress, Up/Down keys control volume.
  */
 
 #ifndef _GNU_SOURCE
@@ -71,7 +75,6 @@ struct w_video_s {
     gboolean is_seeking;         /* TRUE while user is actively dragging seek slider */
     gboolean updating_scale;     /* Guard against recursive scale events */
     gboolean updating_volume;    /* Guard against recursive volume events */
-    gboolean toggle_pending;
 
     /* Mouse dragging in windowed mode */
     gboolean is_mouse_down;
@@ -93,8 +96,17 @@ struct w_video_s {
     gboolean cursor_hidden;
 };
 
-/* Keep a global list of active widget instances */
+/* Keep a thread-safe global list of active widget instances */
 static GList *active_widgets = NULL;
+static GMutex widgets_mutex;
+
+/* Message dispatch structure for main thread execution */
+typedef struct {
+    w_video_t *w;
+    uint32_t id;
+    uint32_t p1;
+    uint32_t p2;
+} plugin_msg_event_t;
 
 /* ---------------- Helper: Time Formatting ---------------- */
 
@@ -148,32 +160,65 @@ apply_custom_css (void) {
     GtkCssProvider *provider = gtk_css_provider_new ();
     const char *css =
         ".video-control-bar {"
-        "  background: #181818;"
-        "  border-top: 1px solid #2e2e2e;"
-        "  padding: 4px 8px;"
+        "  background: rgba(18, 18, 18, 0.95);"
+        "  border-top: 1px solid #333333;"
+        "  padding: 6px 14px;"
         "}"
         ".video-control-bar button {"
-        "  background: #252525;"
-        "  color: #eeeeee;"
-        "  border: 1px solid #383838;"
-        "  border-radius: 4px;"
-        "  padding: 2px 8px;"
-        "  min-height: 28px;"
-        "  min-width: 32px;"
+        "  background: #282828;"
+        "  color: #f0f0f0;"
+        "  border: 1px solid #444444;"
+        "  border-radius: 6px;"
+        "  padding: 4px 10px;"
+        "  font-size: 20px;"
+        "  font-weight: bold;"
+        "  min-height: 40px;"
+        "  min-width: 48px;"
         "}"
         ".video-control-bar button:hover {"
-        "  background: #3a3a3a;"
+        "  background: #404040;"
         "  color: #ffffff;"
-        "  border-color: #555555;"
+        "  border-color: #666666;"
+        "}"
+        ".video-control-bar button.btn-play {"
+        "  font-size: 24px;"
+        "  min-width: 58px;"
+        "  background: #2a3c54;"
+        "  border-color: #43648c;"
+        "}"
+        ".video-control-bar button.btn-play:hover {"
+        "  background: #395273;"
+        "  border-color: #5c84b8;"
+        "}"
+        ".video-control-bar button image {"
+        "  min-width: 22px;"
+        "  min-height: 22px;"
         "}"
         ".video-control-bar label {"
-        "  color: #cccccc;"
-        "  font-family: Monospace, Sans;"
-        "  font-size: 11px;"
+        "  color: #d8d8d8;"
+        "  font-family: Monospace, sans-serif;"
+        "  font-size: 13px;"
         "  font-weight: bold;"
+        "  padding: 0 4px;"
         "}"
         ".video-control-bar scale {"
-        "  margin: 0 4px;"
+        "  margin: 0 8px;"
+        "}"
+        ".video-control-bar scale trough {"
+        "  min-height: 6px;"
+        "  background: #383838;"
+        "  border-radius: 3px;"
+        "}"
+        ".video-control-bar scale highlight {"
+        "  background: #3584e4;"
+        "  border-radius: 3px;"
+        "}"
+        ".video-control-bar scale slider {"
+        "  min-height: 16px;"
+        "  min-width: 16px;"
+        "  margin: -5px 0;"
+        "  border-radius: 8px;"
+        "  background: #ffffff;"
         "}";
 
     gtk_css_provider_load_from_data (provider, css, -1, NULL);
@@ -214,10 +259,10 @@ update_play_button_state (w_video_t *w) {
 
     if (state == DDB_PLAYBACK_STATE_PLAYING) {
         gtk_button_set_label (GTK_BUTTON (w->btn_play), "❚❚");
-        gtk_widget_set_tooltip_text (w->btn_play, "暫停 (Pause)");
+        gtk_widget_set_tooltip_text (w->btn_play, "暫停 (Space)");
     } else {
         gtk_button_set_label (GTK_BUTTON (w->btn_play), "▶");
-        gtk_widget_set_tooltip_text (w->btn_play, "播放 (Play)");
+        gtk_widget_set_tooltip_text (w->btn_play, "播放 (Space)");
     }
 }
 
@@ -257,6 +302,11 @@ hide_controls_cb (gpointer user_data) {
         return G_SOURCE_REMOVE;
     }
 
+    /* Do not hide if user is currently seeking */
+    if (w->is_seeking) {
+        return G_SOURCE_CONTINUE;
+    }
+
     /* Hide cursor */
     GdkWindow *gdk_win = gtk_widget_get_window (w->det_window);
     if (gdk_win) {
@@ -267,28 +317,13 @@ hide_controls_cb (gpointer user_data) {
         w->cursor_hidden = TRUE;
     }
 
-    /* Hide control bar in fullscreen when idle */
+    /* Hide control bar in fullscreen */
     if (w->control_bar) {
         gtk_widget_hide (w->control_bar);
     }
 
     w->hide_timer_id = 0;
     return G_SOURCE_REMOVE;
-}
-
-static void
-schedule_cursor_hide (w_video_t *w) {
-    if (!w || !w->is_fullscreen) {
-        return;
-    }
-    restore_normal_cursor (w);
-    if (w->control_bar) {
-        gtk_widget_show (w->control_bar);
-    }
-    if (w->hide_timer_id) {
-        g_source_remove (w->hide_timer_id);
-    }
-    w->hide_timer_id = g_timeout_add (2500, hide_controls_cb, w);
 }
 
 /* ---------------- Size Allocation & X11 Sync ---------------- */
@@ -355,8 +390,10 @@ enter_windowed_mode (w_video_t *w) {
 
     if (w->btn_fs_toggle) {
         gtk_button_set_label (GTK_BUTTON (w->btn_fs_toggle), "⛶");
-        gtk_widget_set_tooltip_text (w->btn_fs_toggle, "切換全螢幕 (F11 或 雙擊)");
+        gtk_widget_set_tooltip_text (w->btn_fs_toggle, "全螢幕 (F11 或 雙擊)");
     }
+
+    /* In Windowed mode, the control bar is always visible */
     if (w->control_bar) {
         gtk_widget_show (w->control_bar);
     }
@@ -418,11 +455,13 @@ enter_fullscreen_mode (w_video_t *w) {
         gtk_button_set_label (GTK_BUTTON (w->btn_fs_toggle), "❐");
         gtk_widget_set_tooltip_text (w->btn_fs_toggle, "視窗化 (F11, Esc 或 雙擊)");
     }
-    if (w->control_bar) {
-        gtk_widget_show (w->control_bar);
-    }
 
     gtk_widget_show_all (w->det_window);
+
+    /* In Fullscreen mode, control bar is auto-hidden by default */
+    if (w->control_bar) {
+        gtk_widget_hide (w->control_bar);
+    }
 
     if (w->is_video) {
         if (w->det_cover_area) {
@@ -451,7 +490,11 @@ enter_fullscreen_mode (w_video_t *w) {
         }
     }
 
-    schedule_cursor_hide (w);
+    /* Start idle timer for cursor hiding */
+    if (w->hide_timer_id) {
+        g_source_remove (w->hide_timer_id);
+    }
+    w->hide_timer_id = g_timeout_add (2000, hide_controls_cb, w);
 }
 
 static void
@@ -569,17 +612,51 @@ on_key_press_event (GtkWidget *widget, GdkEventKey *event, gpointer user_data) {
         return TRUE;
     }
 
+    /* Left Arrow: Seek back 5 seconds */
     if (event->keyval == GDK_KEY_Left) {
         float pos = deadbeef->streamer_get_playpos ();
         float target = (pos > 5.0f) ? (pos - 5.0f) : 0.0f;
         deadbeef->sendmessage (DB_EV_SEEK, 0, (uint32_t)(target * 1000.0f), 0);
+        if (w->mpv && w->is_video) {
+            char pos_str[32];
+            snprintf (pos_str, sizeof (pos_str), "%f", target);
+            const char *cmd[] = { "seek", pos_str, "absolute+exact", NULL };
+            setlocale (LC_NUMERIC, "C");
+            mpv_command_async (w->mpv, 0, cmd);
+        }
         return TRUE;
     }
 
+    /* Right Arrow: Seek forward 5 seconds */
     if (event->keyval == GDK_KEY_Right) {
         float pos = deadbeef->streamer_get_playpos ();
         float target = pos + 5.0f;
         deadbeef->sendmessage (DB_EV_SEEK, 0, (uint32_t)(target * 1000.0f), 0);
+        if (w->mpv && w->is_video) {
+            char pos_str[32];
+            snprintf (pos_str, sizeof (pos_str), "%f", target);
+            const char *cmd[] = { "seek", pos_str, "absolute+exact", NULL };
+            setlocale (LC_NUMERIC, "C");
+            mpv_command_async (w->mpv, 0, cmd);
+        }
+        return TRUE;
+    }
+
+    /* Up Arrow: Increase volume by 5% */
+    if (event->keyval == GDK_KEY_Up) {
+        float amp = deadbeef->volume_get_amp ();
+        amp = fminf (1.0f, amp + 0.05f);
+        deadbeef->volume_set_amp (amp);
+        update_volume_state (w);
+        return TRUE;
+    }
+
+    /* Down Arrow: Decrease volume by 5% */
+    if (event->keyval == GDK_KEY_Down) {
+        float amp = deadbeef->volume_get_amp ();
+        amp = fmaxf (0.0f, amp - 0.05f);
+        deadbeef->volume_set_amp (amp);
+        update_volume_state (w);
         return TRUE;
     }
 
@@ -594,9 +671,39 @@ on_motion_notify_event (GtkWidget *widget, GdkEventMotion *event, gpointer user_
     }
 
     if (w->is_fullscreen) {
-        schedule_cursor_hide (w);
+        restore_normal_cursor (w);
+
+        /* Calculate distance from bottom of detached window */
+        int wx = 0, wy = 0, wh = 0;
+        GdkWindow *gdk_win = gtk_widget_get_window (w->det_window);
+        if (gdk_win) {
+            gdk_window_get_origin (gdk_win, &wx, &wy);
+            wh = gdk_window_get_height (gdk_win);
+        }
+
+        double dist_from_bottom = (double)(wy + wh) - event->y_root;
+
+        /* Only show control bar if mouse is near bottom (<= 90px) */
+        if (dist_from_bottom <= 90.0) {
+            if (w->control_bar && !gtk_widget_get_visible (w->control_bar)) {
+                gtk_widget_show (w->control_bar);
+            }
+            if (w->hide_timer_id) {
+                g_source_remove (w->hide_timer_id);
+            }
+            w->hide_timer_id = g_timeout_add (2500, hide_controls_cb, w);
+        } else {
+            /* Mouse is not at bottom -> hide control bar unless currently seeking */
+            if (!w->is_seeking && w->control_bar && gtk_widget_get_visible (w->control_bar)) {
+                gtk_widget_hide (w->control_bar);
+            }
+            if (w->hide_timer_id) {
+                g_source_remove (w->hide_timer_id);
+            }
+            w->hide_timer_id = g_timeout_add (1500, hide_controls_cb, w);
+        }
     } else if (w->is_detached && w->is_mouse_down) {
-        /* Allow dragging window by mouse move if dragged past threshold */
+        /* In windowed mode: allow dragging window by mouse move if dragged past threshold */
         double dx = event->x_root - w->mouse_down_x;
         double dy = event->y_root - w->mouse_down_y;
         if (fabs (dx) > 6.0 || fabs (dy) > 6.0) {
@@ -863,7 +970,7 @@ periodic_timer_cb (gpointer user_data) {
         deadbeef->pl_item_unref (track);
     }
 
-    /* Update controls if detached window is visible */
+    /* Update controls if detached window is active */
     if (w->is_detached) {
         update_play_button_state (w);
 
@@ -909,7 +1016,7 @@ periodic_timer_cb (gpointer user_data) {
     return G_SOURCE_CONTINUE;
 }
 
-/* ---------------- Track Change & Playback Control ---------------- */
+/* ---------------- Track Change & Playback Control (Main Thread) ---------------- */
 
 static void
 update_playing_state (w_video_t *w) {
@@ -1067,6 +1174,63 @@ on_video_area_realize (GtkWidget *widget, gpointer user_data) {
     }
 }
 
+/* ---------------- Main Thread Message Dispatcher ---------------- */
+
+static gboolean
+on_plugin_msg_idle (gpointer user_data) {
+    plugin_msg_event_t *ev = (plugin_msg_event_t *)user_data;
+    if (!ev) {
+        return G_SOURCE_REMOVE;
+    }
+
+    g_mutex_lock (&widgets_mutex);
+    gboolean found = (g_list_find (active_widgets, ev->w) != NULL);
+    g_mutex_unlock (&widgets_mutex);
+
+    if (found) {
+        w_video_t *w = ev->w;
+        switch (ev->id) {
+        case DB_EV_SONGSTARTED:
+        case DB_EV_SONGCHANGED:
+        case DB_EV_STOP:
+            update_playing_state (w);
+            break;
+
+        case DB_EV_PAUSED:
+            if (w->mpv && w->is_video) {
+                setlocale (LC_NUMERIC, "C");
+                mpv_set_property_string (w->mpv, "pause", ev->p1 ? "yes" : "no");
+            }
+            update_play_button_state (w);
+            break;
+
+        case DB_EV_VOLUMECHANGED:
+            update_volume_state (w);
+            break;
+
+        case DB_EV_SEEKED:
+        case DB_EV_SEEK:
+            if (w->mpv && w->is_video) {
+                float pos = deadbeef->streamer_get_playpos ();
+                if (pos >= 0.0f) {
+                    char pos_str[32];
+                    snprintf (pos_str, sizeof (pos_str), "%f", pos);
+                    const char *cmd[] = { "seek", pos_str, "absolute+exact", NULL };
+                    setlocale (LC_NUMERIC, "C");
+                    mpv_command_async (w->mpv, 0, cmd);
+                }
+            }
+            break;
+
+        default:
+            break;
+        }
+    }
+
+    free (ev);
+    return G_SOURCE_REMOVE;
+}
+
 /* ---------------- Widget Lifecycle ---------------- */
 
 static void
@@ -1076,7 +1240,9 @@ w_video_destroy (ddb_gtkui_widget_t *base) {
         return;
     }
 
+    g_mutex_lock (&widgets_mutex);
     active_widgets = g_list_remove (active_widgets, w);
+    g_mutex_unlock (&widgets_mutex);
 
     if (w->sync_timer_id) {
         g_source_remove (w->sync_timer_id);
@@ -1127,47 +1293,7 @@ w_video_destroy (ddb_gtkui_widget_t *base) {
 
 static int
 w_video_message (ddb_gtkui_widget_t *base, uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
-    w_video_t *w = (w_video_t *)base;
-    if (!w) {
-        return 0;
-    }
-
-    switch (id) {
-    case DB_EV_SONGSTARTED:
-    case DB_EV_SONGCHANGED:
-    case DB_EV_STOP:
-        update_playing_state (w);
-        break;
-
-    case DB_EV_PAUSED:
-        if (w->mpv && w->is_video) {
-            setlocale (LC_NUMERIC, "C");
-            mpv_set_property_string (w->mpv, "pause", p1 ? "yes" : "no");
-        }
-        update_play_button_state (w);
-        break;
-
-    case DB_EV_VOLUMECHANGED:
-        update_volume_state (w);
-        break;
-
-    case DB_EV_SEEKED:
-    case DB_EV_SEEK:
-        if (w->mpv && w->is_video) {
-            float pos = deadbeef->streamer_get_playpos ();
-            if (pos >= 0.0f) {
-                char pos_str[32];
-                snprintf (pos_str, sizeof (pos_str), "%f", pos);
-                const char *cmd[] = { "seek", pos_str, "absolute+exact", NULL };
-                setlocale (LC_NUMERIC, "C");
-                mpv_command_async (w->mpv, 0, cmd);
-            }
-        }
-        break;
-
-    default:
-        break;
-    }
+    /* Widget-level messages are handled safely via video_plugin_message dispatch */
     return 0;
 }
 
@@ -1273,31 +1399,40 @@ w_video_create (void) {
 
     /* 3. Control Bar at bottom of detached window */
     w->control_bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_widget_set_size_request (w->control_bar, -1, 40);
+    gtk_widget_set_size_request (w->control_bar, -1, 54);
+    gtk_widget_add_events (w->control_bar, GDK_POINTER_MOTION_MASK);
+    g_signal_connect (w->control_bar, "motion-notify-event", G_CALLBACK (on_motion_notify_event), w);
+
     GtkStyleContext *c_ctx = gtk_widget_get_style_context (w->control_bar);
     gtk_style_context_add_class (c_ctx, "video-control-bar");
     gtk_box_pack_start (GTK_BOX (w->det_main_box), w->control_bar, FALSE, FALSE, 0);
 
     /* Play / Pause button */
     w->btn_play = gtk_button_new_with_label ("▶");
+    gtk_widget_set_can_focus (w->btn_play, FALSE);
+    GtkStyleContext *play_ctx = gtk_widget_get_style_context (w->btn_play);
+    gtk_style_context_add_class (play_ctx, "btn-play");
     gtk_widget_set_tooltip_text (w->btn_play, "播放 / 暫停 (Space)");
     g_signal_connect (w->btn_play, "clicked", G_CALLBACK (on_btn_play_clicked), w);
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_play, FALSE, FALSE, 2);
 
     /* Stop button */
     w->btn_stop = gtk_button_new_with_label ("⏹");
+    gtk_widget_set_can_focus (w->btn_stop, FALSE);
     gtk_widget_set_tooltip_text (w->btn_stop, "停止 (Stop)");
     g_signal_connect (w->btn_stop, "clicked", G_CALLBACK (on_btn_stop_clicked), w);
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_stop, FALSE, FALSE, 2);
 
     /* Previous button */
     w->btn_prev = gtk_button_new_with_label ("⏮");
+    gtk_widget_set_can_focus (w->btn_prev, FALSE);
     gtk_widget_set_tooltip_text (w->btn_prev, "上一首 (Previous)");
     g_signal_connect (w->btn_prev, "clicked", G_CALLBACK (on_btn_prev_clicked), w);
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_prev, FALSE, FALSE, 2);
 
     /* Next button */
     w->btn_next = gtk_button_new_with_label ("⏭");
+    gtk_widget_set_can_focus (w->btn_next, FALSE);
     gtk_widget_set_tooltip_text (w->btn_next, "下一首 (Next)");
     g_signal_connect (w->btn_next, "clicked", G_CALLBACK (on_btn_next_clicked), w);
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_next, FALSE, FALSE, 2);
@@ -1308,6 +1443,7 @@ w_video_create (void) {
 
     /* Seek / Progress slider */
     w->seek_scale = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL, 0.0, 100.0, 1.0);
+    gtk_widget_set_can_focus (w->seek_scale, FALSE);
     gtk_scale_set_draw_value (GTK_SCALE (w->seek_scale), FALSE);
     g_signal_connect (w->seek_scale, "button-press-event", G_CALLBACK (on_seek_scale_button_press), w);
     g_signal_connect (w->seek_scale, "button-release-event", G_CALLBACK (on_seek_scale_button_release), w);
@@ -1320,7 +1456,8 @@ w_video_create (void) {
 
     /* Volume button */
     w->vol_btn = gtk_volume_button_new ();
-    gtk_widget_set_tooltip_text (w->vol_btn, "音量控制 (Volume)");
+    gtk_widget_set_can_focus (w->vol_btn, FALSE);
+    gtk_widget_set_tooltip_text (w->vol_btn, "音量控制 (上下方向鍵)");
     w->updating_volume = TRUE;
     gtk_scale_button_set_value (GTK_SCALE_BUTTON (w->vol_btn), (double)deadbeef->volume_get_amp ());
     w->updating_volume = FALSE;
@@ -1329,12 +1466,14 @@ w_video_create (void) {
 
     /* Windowed / Fullscreen toggle button */
     w->btn_fs_toggle = gtk_button_new_with_label ("⛶");
+    gtk_widget_set_can_focus (w->btn_fs_toggle, FALSE);
     gtk_widget_set_tooltip_text (w->btn_fs_toggle, "全螢幕 / 視窗化切換 (F11)");
     g_signal_connect (w->btn_fs_toggle, "clicked", G_CALLBACK (on_btn_fs_toggle_clicked), w);
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_fs_toggle, FALSE, FALSE, 2);
 
     /* Dock button */
     w->btn_dock = gtk_button_new_with_label ("⤓");
+    gtk_widget_set_can_focus (w->btn_dock, FALSE);
     gtk_widget_set_tooltip_text (w->btn_dock, "還原嵌入主視窗 (Esc)");
     g_signal_connect (w->btn_dock, "clicked", G_CALLBACK (on_btn_dock_clicked), w);
     gtk_box_pack_start (GTK_BOX (w->control_bar), w->btn_dock, FALSE, FALSE, 2);
@@ -1379,8 +1518,10 @@ w_video_create (void) {
     gtk_widget_hide (w->video_area);
     gtk_widget_show_all (w->container);
 
-    /* Register to global widget list */
+    /* Register to global widget list thread-safely */
+    g_mutex_lock (&widgets_mutex);
     active_widgets = g_list_append (active_widgets, w);
+    g_mutex_unlock (&widgets_mutex);
 
     /* Check current playing track */
     update_playing_state (w);
@@ -1396,41 +1537,20 @@ video_plugin_message (uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
     case DB_EV_SONGSTARTED:
     case DB_EV_SONGCHANGED:
     case DB_EV_STOP:
-        for (GList *l = active_widgets; l; l = l->next) {
-            update_playing_state ((w_video_t *)l->data);
-        }
-        break;
-
     case DB_EV_PAUSED:
-        for (GList *l = active_widgets; l; l = l->next) {
-            w_video_t *w = (w_video_t *)l->data;
-            if (w->mpv && w->is_video) {
-                mpv_set_property_string (w->mpv, "pause", p1 ? "yes" : "no");
-            }
-            update_play_button_state (w);
-        }
-        break;
-
     case DB_EV_VOLUMECHANGED:
-        for (GList *l = active_widgets; l; l = l->next) {
-            update_volume_state ((w_video_t *)l->data);
-        }
-        break;
-
     case DB_EV_SEEKED:
     case DB_EV_SEEK:
+        g_mutex_lock (&widgets_mutex);
         for (GList *l = active_widgets; l; l = l->next) {
-            w_video_t *w = (w_video_t *)l->data;
-            if (w->mpv && w->is_video) {
-                float pos = deadbeef->streamer_get_playpos ();
-                if (pos >= 0.0f) {
-                    char pos_str[32];
-                    snprintf (pos_str, sizeof (pos_str), "%f", pos);
-                    const char *cmd[] = { "seek", pos_str, "absolute+exact", NULL };
-                    mpv_command_async (w->mpv, 0, cmd);
-                }
-            }
+            plugin_msg_event_t *ev = malloc (sizeof (plugin_msg_event_t));
+            ev->w = (w_video_t *)l->data;
+            ev->id = id;
+            ev->p1 = p1;
+            ev->p2 = p2;
+            g_idle_add (on_plugin_msg_idle, ev);
         }
+        g_mutex_unlock (&widgets_mutex);
         break;
 
     default:
