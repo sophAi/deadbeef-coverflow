@@ -20,6 +20,8 @@ typedef struct {
     int track_count;
     int track_capacity;
     DB_playItem_t *rep_track;    /* Representative track for artwork fetching (refcounted) */
+    gboolean is_video;           /* TRUE if this album is a video track */
+    char *video_uri;             /* Local file path or URI for video thumbnail extraction */
 
     /* OpenGL texture cache & pending uploads */
     GLuint texture_id;           /* 0 if not yet uploaded to GPU */

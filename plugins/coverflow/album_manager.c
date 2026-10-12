@@ -4,6 +4,7 @@
 */
 
 #include "album_manager.h"
+#include "video_thumb.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -65,6 +66,10 @@ album_free_contents (album_manager_t *mgr, coverflow_album_t *al) {
     free (al->album);
     free (al->year);
     free (al->track_indices);
+    if (al->video_uri) {
+        free (al->video_uri);
+        al->video_uri = NULL;
+    }
     if (al->rep_track) {
         deadbeef->pl_item_unref (al->rep_track);
         al->rep_track = NULL;
@@ -120,7 +125,7 @@ album_add_track_index (coverflow_album_t *al, int track_idx) {
 }
 
 static int
-album_manager_add_album (album_manager_t *mgr, const char *key, const char *artist, const char *album, const char *year, DB_playItem_t *rep_track) {
+album_manager_add_album (album_manager_t *mgr, const char *key, const char *artist, const char *album, const char *year, DB_playItem_t *rep_track, gboolean is_video, const char *video_uri) {
     if (mgr->count >= mgr->capacity) {
         mgr->capacity = mgr->capacity < 16 ? 16 : mgr->capacity * 2;
         mgr->albums = realloc (mgr->albums, mgr->capacity * sizeof (coverflow_album_t));
@@ -136,6 +141,8 @@ album_manager_add_album (album_manager_t *mgr, const char *key, const char *arti
     if (rep_track) {
         deadbeef->pl_item_ref (rep_track);
     }
+    al->is_video = is_video;
+    al->video_uri = video_uri ? strdup (video_uri) : NULL;
     return idx;
 }
 
@@ -187,74 +194,112 @@ album_manager_rebuild (album_manager_t *mgr, ddb_playlist_t *plt) {
             continue;
         }
 
-        const char *artist = deadbeef->pl_find_meta (it, "albumartist");
-        if (!artist || !*artist) {
-            artist = deadbeef->pl_find_meta (it, "artist");
-        }
-        if (!artist || !*artist) {
-            artist = "Unknown Artist";
-        }
+        const char *uri = deadbeef->pl_find_meta (it, ":URI");
+        gboolean is_video = uri ? video_thumb_is_video_uri (uri) : FALSE;
 
-        const char *album = deadbeef->pl_find_meta (it, "album");
-        char dir_fallback[256] = {0};
-        if (!album || !*album) {
-            /* Try to use folder name as album fallback */
-            const char *uri = deadbeef->pl_find_meta (it, ":URI");
-            if (uri) {
-                const char *last_slash = strrchr (uri, '/');
-                if (last_slash) {
-                    const char *prev_slash = last_slash - 1;
-                    while (prev_slash > uri && *prev_slash != '/') {
-                        prev_slash--;
-                    }
-                    if (*prev_slash == '/') {
-                        size_t len = last_slash - prev_slash - 1;
-                        if (len > 0 && len < sizeof (dir_fallback)) {
-                            strncpy (dir_fallback, prev_slash + 1, len);
-                            dir_fallback[len] = '\0';
-                            album = dir_fallback;
-                        }
-                    }
-                }
-            }
-            if (!album || !*album) {
-                album = "Unknown Album";
-            }
-        }
-
+        char key_buf[1024];
+        const char *artist = NULL;
+        const char *album = NULL;
         const char *year = deadbeef->pl_find_meta (it, "year");
         if (!year || !*year) {
             year = deadbeef->pl_find_meta (it, "date");
         }
+        char title_buf[256] = {0};
 
-        /* Group key: Only group by Album Title */
-        char key_buf[512];
-        g_strlcpy (key_buf, album, sizeof (key_buf));
-        g_strstrip (key_buf);
+        if (is_video) {
+            /* Video item: Unique album card per video file */
+            g_snprintf (key_buf, sizeof (key_buf), "video:%s", uri ? uri : "");
+
+            const char *meta_title = deadbeef->pl_find_meta (it, "title");
+            if (meta_title && *meta_title) {
+                album = meta_title;
+            } else if (uri) {
+                /* Extract base filename without extension */
+                const char *last_slash = strrchr (uri, '/');
+                const char *fname = last_slash ? (last_slash + 1) : uri;
+                g_strlcpy (title_buf, fname, sizeof (title_buf));
+                char *dot = strrchr (title_buf, '.');
+                if (dot) {
+                    *dot = '\0';
+                }
+                album = title_buf;
+            } else {
+                album = "Unknown Video";
+            }
+
+            artist = deadbeef->pl_find_meta (it, "artist");
+            if (!artist || !*artist) {
+                artist = deadbeef->pl_find_meta (it, "albumartist");
+            }
+            if (!artist || !*artist) {
+                artist = "";
+            }
+        } else {
+            /* Audio item */
+            artist = deadbeef->pl_find_meta (it, "albumartist");
+            if (!artist || !*artist) {
+                artist = deadbeef->pl_find_meta (it, "artist");
+            }
+            if (!artist || !*artist) {
+                artist = "Unknown Artist";
+            }
+
+            album = deadbeef->pl_find_meta (it, "album");
+            char dir_fallback[256] = {0};
+            if (!album || !*album) {
+                /* Try to use folder name as album fallback */
+                if (uri) {
+                    const char *last_slash = strrchr (uri, '/');
+                    if (last_slash) {
+                        const char *prev_slash = last_slash - 1;
+                        while (prev_slash > uri && *prev_slash != '/') {
+                            prev_slash--;
+                        }
+                        if (*prev_slash == '/') {
+                            size_t len = last_slash - prev_slash - 1;
+                            if (len > 0 && len < sizeof (dir_fallback)) {
+                                strncpy (dir_fallback, prev_slash + 1, len);
+                                dir_fallback[len] = '\0';
+                                album = dir_fallback;
+                            }
+                        }
+                    }
+                }
+                if (!album || !*album) {
+                    album = "Unknown Album";
+                }
+            }
+
+            /* Group key: Only group by Album Title */
+            g_strlcpy (key_buf, album, sizeof (key_buf));
+            g_strstrip (key_buf);
+        }
 
         gpointer val = NULL;
         int target_idx = -1;
         if (g_hash_table_lookup_extended (album_map, key_buf, NULL, &val)) {
             target_idx = GPOINTER_TO_INT (val);
-            coverflow_album_t *al = &mgr->albums[target_idx];
-            /* Prefer explicit albumartist if available */
-            const char *alb_artist = deadbeef->pl_find_meta (it, "albumartist");
-            if (alb_artist && *alb_artist) {
-                if (!al->artist || strcmp (al->artist, alb_artist) != 0) {
+            if (!is_video) {
+                coverflow_album_t *al = &mgr->albums[target_idx];
+                /* Prefer explicit albumartist if available */
+                const char *alb_artist = deadbeef->pl_find_meta (it, "albumartist");
+                if (alb_artist && *alb_artist) {
+                    if (!al->artist || strcmp (al->artist, alb_artist) != 0) {
+                        free (al->artist);
+                        al->artist = strdup (alb_artist);
+                    }
+                } else if (al->artist && strcmp (al->artist, "Various Artists") != 0 && strcmp (al->artist, artist) != 0) {
+                    /* Tracks under the same album have different artists */
                     free (al->artist);
-                    al->artist = strdup (alb_artist);
+                    al->artist = strdup ("Various Artists");
                 }
-            } else if (al->artist && strcmp (al->artist, "Various Artists") != 0 && strcmp (al->artist, artist) != 0) {
-                /* Tracks under the same album have different artists */
-                free (al->artist);
-                al->artist = strdup ("Various Artists");
             }
         } else {
-            const char *display_artist = deadbeef->pl_find_meta (it, "albumartist");
+            const char *display_artist = is_video ? artist : deadbeef->pl_find_meta (it, "albumartist");
             if (!display_artist || !*display_artist) {
                 display_artist = artist;
             }
-            target_idx = album_manager_add_album (mgr, key_buf, display_artist, album, year, it);
+            target_idx = album_manager_add_album (mgr, key_buf, display_artist, album, year, it, is_video, is_video ? uri : NULL);
             g_hash_table_insert (album_map, strdup (key_buf), GINT_TO_POINTER (target_idx));
         }
 

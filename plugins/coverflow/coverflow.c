@@ -30,6 +30,7 @@
 #include "../artwork/artwork.h"
 #include "album_manager.h"
 #include "gl_coverflow.h"
+#include "video_thumb.h"
 
 DB_functions_t *deadbeef;
 static ddb_gtkui_t *gtkui_plugin;
@@ -208,9 +209,127 @@ on_cover_query_callback (int error, ddb_cover_query_t *query, ddb_cover_info_t *
     free (query);
 }
 
+/* ---------------- Video Thumbnail Background Worker ---------------- */
+
+static GThreadPool *s_video_thumb_pool = NULL;
+
+typedef struct {
+    w_coverflow_t *w;
+    coverflow_lifecycle_t *lifecycle;
+    int playlist_version;
+    int album_index;
+    char *video_uri;
+    char *cache_path;
+} video_thumb_task_t;
+
+static void
+free_video_thumb_task (video_thumb_task_t *task) {
+    if (!task) return;
+    if (task->video_uri) {
+        free (task->video_uri);
+    }
+    if (task->cache_path) {
+        free (task->cache_path);
+    }
+    if (task->lifecycle) {
+        task->lifecycle->ref_count--;
+        if (task->lifecycle->ref_count == 0) {
+            free (task->lifecycle);
+        }
+    }
+    free (task);
+}
+
+static gboolean
+on_video_thumb_ready_in_main_thread (gpointer user_data) {
+    video_thumb_task_t *task = (video_thumb_task_t *)user_data;
+    if (task->lifecycle && task->lifecycle->alive) {
+        w_coverflow_t *w = task->w;
+        int idx = task->album_index;
+        if (task->playlist_version == w->playlist_version &&
+            idx >= 0 && idx < w->album_mgr.count) {
+            coverflow_album_t *al = &w->album_mgr.albums[idx];
+            if (al->pending_image_path) {
+                char *p = al->pending_image_path;
+                al->pending_image_path = NULL;
+                free (p);
+            }
+            if (task->cache_path && task->cache_path[0]) {
+                al->pending_image_path = task->cache_path;
+                task->cache_path = NULL; /* Transferred ownership to al */
+            }
+            al->texture_loaded = TRUE;
+            al->is_fetching = FALSE;
+
+            if (w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
+                gtk_widget_queue_draw (w->gl_area);
+            }
+        }
+    }
+
+    free_video_thumb_task (task);
+    return G_SOURCE_REMOVE;
+}
+
+static void
+video_thumb_worker_thread (gpointer data, gpointer user_data) {
+    video_thumb_task_t *task = (video_thumb_task_t *)data;
+    if (!task) return;
+
+    if (!task->lifecycle || !task->lifecycle->alive) {
+        free_video_thumb_task (task);
+        return;
+    }
+
+    /* Perform thumbnail extraction */
+    gboolean ok = FALSE;
+    if (g_file_test (task->cache_path, G_FILE_TEST_EXISTS)) {
+        ok = TRUE;
+    } else {
+        ok = video_thumb_generate_thumbnail (task->video_uri, task->cache_path);
+    }
+
+    if (!ok) {
+        free (task->cache_path);
+        task->cache_path = NULL;
+    }
+
+    g_idle_add (on_video_thumb_ready_in_main_thread, task);
+}
+
+static void
+coverflow_queue_video_thumbnail (w_coverflow_t *w, int album_idx, const char *video_uri, char *cache_path) {
+    if (!s_video_thumb_pool) {
+        GError *err = NULL;
+        s_video_thumb_pool = g_thread_pool_new (video_thumb_worker_thread, NULL, 3, FALSE, &err);
+        if (err) {
+            g_error_free (err);
+            s_video_thumb_pool = NULL;
+            free (cache_path);
+            coverflow_album_t *al = &w->album_mgr.albums[album_idx];
+            al->texture_loaded = TRUE;
+            al->is_fetching = FALSE;
+            return;
+        }
+    }
+
+    video_thumb_task_t *task = malloc (sizeof (video_thumb_task_t));
+    task->w = w;
+    task->lifecycle = w->lifecycle;
+    if (w->lifecycle) {
+        w->lifecycle->ref_count++;
+    }
+    task->playlist_version = w->playlist_version;
+    task->album_index = album_idx;
+    task->video_uri = strdup (video_uri);
+    task->cache_path = cache_path;
+
+    g_thread_pool_push (s_video_thumb_pool, task, NULL);
+}
+
 static void
 check_and_fetch_artwork_for_visible_albums (w_coverflow_t *w) {
-    if (!w->artwork_plugin || w->album_mgr.count == 0) return;
+    if (w->album_mgr.count == 0) return;
 
     int center = (int)roundf (w->current_pos);
     int fetch_radius = 24;
@@ -221,27 +340,42 @@ check_and_fetch_artwork_for_visible_albums (w_coverflow_t *w) {
 
     for (int i = min_idx; i <= max_idx; i++) {
         coverflow_album_t *al = &w->album_mgr.albums[i];
-        if (!al->texture_loaded && !al->is_fetching && al->rep_track) {
-            al->is_fetching = TRUE;
+        if (!al->texture_loaded && !al->is_fetching) {
+            if (al->is_video && al->video_uri) {
+                al->is_fetching = TRUE;
+                char *cached = video_thumb_get_cache_path (al->video_uri);
+                if (cached && g_file_test (cached, G_FILE_TEST_EXISTS)) {
+                    al->pending_image_path = cached;
+                    al->texture_loaded = TRUE;
+                    al->is_fetching = FALSE;
+                    if (w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
+                        gtk_widget_queue_draw (w->gl_area);
+                    }
+                } else {
+                    coverflow_queue_video_thumbnail (w, i, al->video_uri, cached);
+                }
+            } else if (w->artwork_plugin && al->rep_track) {
+                al->is_fetching = TRUE;
 
-            texture_ready_data_t *tdata = malloc (sizeof (texture_ready_data_t));
-            tdata->w = w;
-            tdata->lifecycle = w->lifecycle;
-            if (w->lifecycle) {
-                w->lifecycle->ref_count++;
+                texture_ready_data_t *tdata = malloc (sizeof (texture_ready_data_t));
+                tdata->w = w;
+                tdata->lifecycle = w->lifecycle;
+                if (w->lifecycle) {
+                    w->lifecycle->ref_count++;
+                }
+                tdata->playlist_version = w->playlist_version;
+                tdata->album_index = i;
+                tdata->image_path = NULL;
+
+                ddb_cover_query_t *q = calloc (1, sizeof (ddb_cover_query_t));
+                q->_size = sizeof (ddb_cover_query_t);
+                q->track = al->rep_track;
+                deadbeef->pl_item_ref (q->track);
+                q->source_id = w->artwork_source_id;
+                q->user_data = tdata;
+
+                w->artwork_plugin->cover_get (q, on_cover_query_callback);
             }
-            tdata->playlist_version = w->playlist_version;
-            tdata->album_index = i;
-            tdata->image_path = NULL;
-
-            ddb_cover_query_t *q = calloc (1, sizeof (ddb_cover_query_t));
-            q->_size = sizeof (ddb_cover_query_t);
-            q->track = al->rep_track;
-            deadbeef->pl_item_ref (q->track);
-            q->source_id = w->artwork_source_id;
-            q->user_data = tdata;
-
-            w->artwork_plugin->cover_get (q, on_cover_query_callback);
         }
     }
 }
@@ -1763,6 +1897,10 @@ coverflow_connect (void) {
 
 static int
 coverflow_disconnect (void) {
+    if (s_video_thumb_pool) {
+        g_thread_pool_free (s_video_thumb_pool, FALSE, TRUE);
+        s_video_thumb_pool = NULL;
+    }
     if (gtkui_plugin) {
         gtkui_plugin->w_unreg_widget ("coverflow");
         gtkui_plugin = NULL;

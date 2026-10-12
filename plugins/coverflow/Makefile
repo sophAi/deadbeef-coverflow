@@ -7,7 +7,7 @@ GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 epoxy) -lm -ldl
 
 INCLUDES := -I../../include -I../.. -I.
 
-SRCS := coverflow.c gl_coverflow.c album_manager.c
+SRCS := coverflow.c gl_coverflow.c album_manager.c video_thumb.c
 OBJS := $(SRCS:.c=.o)
 TARGET := coverflow_gtk3.so
 
