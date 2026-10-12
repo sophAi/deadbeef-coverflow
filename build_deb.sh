@@ -129,6 +129,15 @@ if [ -d "${SCRIPT_DIR}/plugins/video" ]; then
     fi
 fi
 
+# Build and copy Export & Import All Playlists plugin
+if [ -d "${SCRIPT_DIR}/plugins/export_all_playlists" ]; then
+    make -C "${SCRIPT_DIR}/plugins/export_all_playlists" clean
+    make -C "${SCRIPT_DIR}/plugins/export_all_playlists"
+    if [ -f "${SCRIPT_DIR}/plugins/export_all_playlists/export_all_playlists.so" ]; then
+        cp -f "${SCRIPT_DIR}/plugins/export_all_playlists/export_all_playlists.so" "${STAGING_DIR}/opt/${PACKAGE_NAME}/plugins/export_all_playlists.so"
+    fi
+fi
+
 # Compile native C launcher for /usr/bin/deadbeef-coverflow
 echo "Compiling native C launcher (${PACKAGE_NAME})..."
 gcc -O2 "${SCRIPT_DIR}/src/launcher.c" -o "${STAGING_DIR}/usr/bin/${PACKAGE_NAME}"

@@ -21,6 +21,7 @@ libtool
 !plugins/coverflow/Makefile
 !plugins/notify/Makefile
 !plugins/video/Makefile
+!plugins/export_all_playlists/Makefile
 config.log
 config.status
 config.cache

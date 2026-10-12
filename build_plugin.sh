@@ -148,6 +148,15 @@ if [ -d "${VIDEO_DIR}" ]; then
     make -C "${VIDEO_DIR}"
 fi
 
+# Compile export_all_playlists plugin if available
+EXPORT_DIR="${SCRIPT_DIR}/plugins/export_all_playlists"
+EXPORT_SO="${EXPORT_DIR}/export_all_playlists.so"
+if [ -d "${EXPORT_DIR}" ]; then
+    echo -e "${BLUE}Compiling Export & Import All Playlists plugin...${RESET}"
+    make -C "${EXPORT_DIR}" clean
+    make -C "${EXPORT_DIR}"
+fi
+
 # 3. Install if requested
 if [ "$DO_INSTALL" = true ]; then
     echo -e "\n${BOLD}[3/3] Installing plugins to:${RESET} ${INSTALL_DEST}"
@@ -168,6 +177,9 @@ if [ "$DO_INSTALL" = true ]; then
         if [ -f "${VIDEO_SO}" ]; then
             cp -v "${VIDEO_SO}" "${INSTALL_DEST}/"
         fi
+        if [ -f "${EXPORT_SO}" ]; then
+            cp -v "${EXPORT_SO}" "${INSTALL_DEST}/"
+        fi
     else
         echo -e "${YELLOW}Destination requires elevated permissions, using sudo...${RESET}"
         sudo cp -v "${TARGET_SO}" "${INSTALL_DEST}/"
@@ -176,6 +188,9 @@ if [ "$DO_INSTALL" = true ]; then
         fi
         if [ -f "${VIDEO_SO}" ]; then
             sudo cp -v "${VIDEO_SO}" "${INSTALL_DEST}/"
+        fi
+        if [ -f "${EXPORT_SO}" ]; then
+            sudo cp -v "${EXPORT_SO}" "${INSTALL_DEST}/"
         fi
     fi
 
