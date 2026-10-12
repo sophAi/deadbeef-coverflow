@@ -761,6 +761,10 @@ show_context_menu (w_coverflow_t *w, GdkEventButton *event) {
 
 static gboolean
 on_button_press_event (GtkWidget *widget, GdkEventButton *event, gpointer user_data) {
+    if (gtkui_plugin && gtkui_plugin->w_get_design_mode && gtkui_plugin->w_get_design_mode ()) {
+        return FALSE;
+    }
+
     w_coverflow_t *w = (w_coverflow_t *)user_data;
 
     /* Give focus to receive arrow keys */

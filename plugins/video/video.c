@@ -342,7 +342,14 @@ restore_normal_cursor (w_video_t *w) {
 static gboolean
 hide_controls_cb (gpointer user_data) {
     w_video_t *w = (w_video_t *)user_data;
-    if (!w || !w->is_fullscreen) {
+    if (!w) {
+        return G_SOURCE_REMOVE;
+    }
+
+    g_mutex_lock (&widgets_mutex);
+    gboolean alive = (g_list_find (active_widgets, w) != NULL);
+    g_mutex_unlock (&widgets_mutex);
+    if (!alive || !w->is_fullscreen) {
         return G_SOURCE_REMOVE;
     }
 
@@ -594,6 +601,10 @@ dock_to_embedded (w_video_t *w) {
 
 static gboolean
 on_button_press_event (GtkWidget *widget, GdkEventButton *event, gpointer user_data) {
+    if (gtkui_plugin && gtkui_plugin->w_get_design_mode && gtkui_plugin->w_get_design_mode ()) {
+        return FALSE;
+    }
+
     w_video_t *w = (w_video_t *)user_data;
     if (!w) {
         return FALSE;
@@ -930,14 +941,21 @@ typedef struct {
 static gboolean
 on_cover_loaded_main_thread (gpointer user_data) {
     cover_load_data_t *data = (cover_load_data_t *)user_data;
-    if (data && data->w) {
+    if (!data) {
+        return G_SOURCE_REMOVE;
+    }
+
+    g_mutex_lock (&widgets_mutex);
+    gboolean alive = (g_list_find (active_widgets, data->w) != NULL);
+    g_mutex_unlock (&widgets_mutex);
+
+    if (alive && data->w) {
         if (data->w->cover_pixbuf) {
             g_object_unref (data->w->cover_pixbuf);
             data->w->cover_pixbuf = NULL;
         }
         if (data->image_path) {
             data->w->cover_pixbuf = gdk_pixbuf_new_from_file (data->image_path, NULL);
-            free (data->image_path);
         }
         if (data->w->cover_area) {
             gtk_widget_queue_draw (data->w->cover_area);
@@ -945,6 +963,10 @@ on_cover_loaded_main_thread (gpointer user_data) {
         if (data->w->det_cover_area) {
             gtk_widget_queue_draw (data->w->det_cover_area);
         }
+    }
+
+    if (data->image_path) {
+        free (data->image_path);
     }
     free (data);
     return G_SOURCE_REMOVE;
@@ -1287,6 +1309,13 @@ on_plugin_msg_idle (gpointer user_data) {
 
 /* ---------------- Widget Lifecycle ---------------- */
 
+static inline void
+safe_disconnect_by_data (gpointer instance, gpointer data) {
+    if (instance && G_IS_OBJECT (instance)) {
+        g_signal_handlers_disconnect_by_data (instance, data);
+    }
+}
+
 static void
 w_video_destroy (ddb_gtkui_widget_t *base) {
     w_video_t *w = (w_video_t *)base;
@@ -1294,10 +1323,12 @@ w_video_destroy (ddb_gtkui_widget_t *base) {
         return;
     }
 
+    /* 1. Remove from active widgets list immediately */
     g_mutex_lock (&widgets_mutex);
     active_widgets = g_list_remove (active_widgets, w);
     g_mutex_unlock (&widgets_mutex);
 
+    /* 2. Stop timers */
     if (w->sync_timer_id) {
         g_source_remove (w->sync_timer_id);
         w->sync_timer_id = 0;
@@ -1307,37 +1338,63 @@ w_video_destroy (ddb_gtkui_widget_t *base) {
         w->hide_timer_id = 0;
     }
 
+    /* 3. Cancel artwork queries */
     if (w->artwork_plugin && w->artwork_source_id) {
         w->artwork_plugin->cancel_queries_with_source_id (w->artwork_source_id);
+        w->artwork_source_id = 0;
     }
 
+    /* 4. Disconnect all signal handlers connected to w to prevent callbacks on freed memory */
+    safe_disconnect_by_data (w->det_window, w);
+    safe_disconnect_by_data (w->det_display_box, w);
+    safe_disconnect_by_data (w->det_cover_area, w);
+    safe_disconnect_by_data (w->control_bar, w);
+    safe_disconnect_by_data (w->btn_play, w);
+    safe_disconnect_by_data (w->btn_stop, w);
+    safe_disconnect_by_data (w->btn_prev, w);
+    safe_disconnect_by_data (w->btn_next, w);
+    safe_disconnect_by_data (w->seek_scale, w);
+    safe_disconnect_by_data (w->vol_btn, w);
+    safe_disconnect_by_data (w->btn_fs_toggle, w);
+    safe_disconnect_by_data (w->btn_dock, w);
+
+    safe_disconnect_by_data (w->container, w);
+    safe_disconnect_by_data (w->event_box, w);
+    safe_disconnect_by_data (w->video_area, w);
+    safe_disconnect_by_data (w->cover_area, w);
+
+    /* 5. Safely terminate and destroy libmpv */
     if (w->mpv) {
         setlocale (LC_NUMERIC, "C");
-        mpv_destroy (w->mpv);
+        mpv_command_string (w->mpv, "stop");
+        int64_t wid = 0;
+        mpv_set_option (w->mpv, "wid", MPV_FORMAT_INT64, &wid);
+        mpv_terminate_destroy (w->mpv);
         w->mpv = NULL;
     }
 
+    /* 6. Release CoverArt pixbuf */
     if (w->cover_pixbuf) {
         g_object_unref (w->cover_pixbuf);
         w->cover_pixbuf = NULL;
     }
 
-    if (w->current_title) free (w->current_title);
-    if (w->current_artist) free (w->current_artist);
+    /* 7. Free track metadata */
+    if (w->current_title) {
+        free (w->current_title);
+        w->current_title = NULL;
+    }
+    if (w->current_artist) {
+        free (w->current_artist);
+        w->current_artist = NULL;
+    }
+    if (w->current_uri) {
+        free (w->current_uri);
+        w->current_uri = NULL;
+    }
 
+    /* 8. Destroy standalone detached window */
     if (w->det_window) {
-        if (w->is_detached && w->video_area && gtk_widget_get_realized (w->video_area) &&
-            w->event_box && gtk_widget_get_realized (w->event_box)) {
-            GdkWindow *gdk_v = gtk_widget_get_window (w->video_area);
-            GdkWindow *gdk_parent = gtk_widget_get_window (w->event_box);
-            if (gdk_v && gdk_parent) {
-                Display *dpy = GDK_WINDOW_XDISPLAY (gdk_v);
-                Window xv = GDK_WINDOW_XID (gdk_v);
-                Window xp = GDK_WINDOW_XID (gdk_parent);
-                XReparentWindow (dpy, xv, xp, 0, 0);
-                XFlush (dpy);
-            }
-        }
         gtk_widget_destroy (w->det_window);
         w->det_window = NULL;
     }
@@ -1571,10 +1628,14 @@ w_video_create (void) {
     /* Start periodic A/V sync & progress timer (200ms) */
     w->sync_timer_id = g_timeout_add (200, periodic_timer_cb, w);
 
-    /* Default view: show cover area initially in embedded mode */
-    gtk_widget_show (w->cover_area);
-    gtk_widget_hide (w->video_area);
+    /* Default view: show embedded container, keep video area hidden initially */
     gtk_widget_show_all (w->container);
+    gtk_widget_hide (w->video_area);
+
+    /* Support DeaDBeeF Design Mode right-click hierarchy */
+    if (gtkui_plugin && gtkui_plugin->w_override_signals) {
+        gtkui_plugin->w_override_signals (w->container, w);
+    }
 
     /* Check current playing track */
     update_playing_state (w);
