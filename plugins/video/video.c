@@ -1342,7 +1342,7 @@ w_video_destroy (ddb_gtkui_widget_t *base) {
         w->det_window = NULL;
     }
 
-    free (w);
+    /* Note: Do NOT call free(w) here! DeaDBeeF gtkui's w_destroy() frees w. */
 }
 
 static int
