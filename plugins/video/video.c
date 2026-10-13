@@ -1446,7 +1446,8 @@ w_video_create (void) {
 
     /* Video Drawing Area */
     w->video_area = gtk_drawing_area_new ();
-    gtk_widget_set_size_request (w->video_area, 320, 180);
+    gtk_widget_set_size_request (w->video_area, 160, 90);
+    gtk_widget_set_no_show_all (w->video_area, TRUE);
     gtk_widget_add_events (w->video_area, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
     g_signal_connect (w->video_area, "realize", G_CALLBACK (on_video_area_realize), w);
     g_signal_connect (w->video_area, "button-press-event", G_CALLBACK (on_button_press_event), w);
@@ -1456,7 +1457,8 @@ w_video_create (void) {
 
     /* CoverArt Drawing Area for embedded mode */
     w->cover_area = gtk_drawing_area_new ();
-    gtk_widget_set_size_request (w->cover_area, 320, 180);
+    gtk_widget_set_size_request (w->cover_area, 160, 90);
+    gtk_widget_set_no_show_all (w->cover_area, TRUE);
     gtk_widget_add_events (w->cover_area, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
     g_signal_connect (w->cover_area, "draw", G_CALLBACK (on_cover_area_draw), w);
     g_signal_connect (w->cover_area, "button-press-event", G_CALLBACK (on_button_press_event), w);

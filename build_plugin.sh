@@ -157,6 +157,15 @@ if [ -d "${EXPORT_DIR}" ]; then
     make -C "${EXPORT_DIR}"
 fi
 
+# Compile layout_manager plugin if available
+LAYOUT_DIR="${SCRIPT_DIR}/plugins/layout_manager"
+LAYOUT_SO="${LAYOUT_DIR}/layout_manager.so"
+if [ -d "${LAYOUT_DIR}" ]; then
+    echo -e "${BLUE}Compiling Layout & Settings Manager plugin...${RESET}"
+    make -C "${LAYOUT_DIR}" clean
+    make -C "${LAYOUT_DIR}"
+fi
+
 # 3. Install if requested
 if [ "$DO_INSTALL" = true ]; then
     echo -e "\n${BOLD}[3/3] Installing plugins to:${RESET} ${INSTALL_DEST}"
@@ -180,6 +189,9 @@ if [ "$DO_INSTALL" = true ]; then
         if [ -f "${EXPORT_SO}" ]; then
             cp -v "${EXPORT_SO}" "${INSTALL_DEST}/"
         fi
+        if [ -f "${LAYOUT_SO}" ]; then
+            cp -v "${LAYOUT_SO}" "${INSTALL_DEST}/"
+        fi
     else
         echo -e "${YELLOW}Destination requires elevated permissions, using sudo...${RESET}"
         sudo cp -v "${TARGET_SO}" "${INSTALL_DEST}/"
@@ -191,6 +203,9 @@ if [ "$DO_INSTALL" = true ]; then
         fi
         if [ -f "${EXPORT_SO}" ]; then
             sudo cp -v "${EXPORT_SO}" "${INSTALL_DEST}/"
+        fi
+        if [ -f "${LAYOUT_SO}" ]; then
+            sudo cp -v "${LAYOUT_SO}" "${INSTALL_DEST}/"
         fi
     fi
 

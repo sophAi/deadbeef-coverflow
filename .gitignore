@@ -22,6 +22,7 @@ libtool
 !plugins/notify/Makefile
 !plugins/video/Makefile
 !plugins/export_all_playlists/Makefile
+!plugins/layout_manager/Makefile
 config.log
 config.status
 config.cache

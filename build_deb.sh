@@ -138,6 +138,15 @@ if [ -d "${SCRIPT_DIR}/plugins/export_all_playlists" ]; then
     fi
 fi
 
+# Build and copy Layout & Settings Manager plugin
+if [ -d "${SCRIPT_DIR}/plugins/layout_manager" ]; then
+    make -C "${SCRIPT_DIR}/plugins/layout_manager" clean
+    make -C "${SCRIPT_DIR}/plugins/layout_manager"
+    if [ -f "${SCRIPT_DIR}/plugins/layout_manager/layout_manager.so" ]; then
+        cp -f "${SCRIPT_DIR}/plugins/layout_manager/layout_manager.so" "${STAGING_DIR}/opt/${PACKAGE_NAME}/plugins/layout_manager.so"
+    fi
+fi
+
 # Compile native C launcher for /usr/bin/deadbeef-coverflow
 echo "Compiling native C launcher (${PACKAGE_NAME})..."
 gcc -O2 "${SCRIPT_DIR}/src/launcher.c" -o "${STAGING_DIR}/usr/bin/${PACKAGE_NAME}"

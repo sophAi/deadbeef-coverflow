@@ -7,7 +7,14 @@
 
 **DeaDBeeF** 是一款在 Linux 上廣受推崇、極致輕量、啟動飛快且高度模組化的終極音樂播放器。
 
-本專案為 DeaDBeeF GTK3 介面深度整合了原生的 **3D OpenGL Cover Flow 視差專輯封面外掛** 與專為 Linux Mint MATE 深度優化的 **OSD Notify 桌面快訊通知外掛**，重現如經典 iTunes 般華麗流暢的立體翻頁互動，並針對現代高解析度寬螢幕（1080p+）、深色主題（Dark Theme）以及多螢幕桌面環境進行了全方位的視覺架構重構與體驗優化。
+本專案為 DeaDBeeF GTK3 介面深度整合了一整套強大的專屬外掛套件：
+- 🌟 原生 **3D OpenGL Cover Flow 視差專輯封面外掛** (`coverflow_gtk3.so`)
+- 🎬 原生 **NVDEC 硬體加速 Video & Cover Player 視訊/封面播放外掛** (`video_gtk3.so`)
+- 🔔 專為 Linux Mint MATE / 多螢幕深度優化的 **OSD Notify 桌面快訊通知外掛** (`notify.so`)
+- 📐 **設計模式版面配置與外掛設定管理外掛** (`layout_manager.so`)：支援一鍵匯出/匯入版面架構與各外掛設定檔，並具備即時熱重載（Hot-Reload）。
+- 📑 **所有播放清單批次匯出與匯入外掛** (`export_all_playlists.so`)：支援標準 EXTM3U 與 JSON 格式一鍵備份與無縫還原。
+
+專案針對現代高解析度寬螢幕（1080p+ / 4K）、深色主題（Dark Theme）以及多螢幕桌面環境進行了全方位的視覺架構重構與穩定性優化。
 
 ---
 
@@ -94,6 +101,40 @@
 
 ---
 
+## 📐 設計模式版面配置與外掛設定管理 (Layout & Settings Manager)
+
+DeaDBeeF 的 UI 佈局結構與各外掛偏好設定通常隱藏在系統組態檔深處。本專案整合了強大的 **版面與外掛設定管理外掛 (`layout_manager`)**，支援將版面結構與外掛設定封裝為單一可攜式的 `.ddblayout`（或 `.json`）設定檔：
+
+- 🗂️ **彈性勾選對話框（Selective Import/Export）**
+  匯出或匯入時皆會跳出直覺對話框，提供快速「全選」與各別分類勾選：
+  - **設計模式版面配置 (Design Mode Layout)**：主介面分割器比例（Splitters）、Cover Flow 3D 舞台、影片播放器、播放清單分頁等全域佈局架構。
+  - **色彩主題與外觀 (Color Theme & UI)**：播放清單背景/文字/交替列底色、分頁標籤配色、暗色主題喜好設定。
+  - **播放清單與搜尋欄位 (Playlist & Search Columns)**：曲目欄位定義、格式化標籤與顯示寬度。
+  - **Cover Flow 3D 視覺設定**：視角角度、封面反射特效、尺寸快取與立體景深參數。
+  - **視訊與封面播放器設定 (Video & Cover Player)**：硬體解碼喜好、控制列外觀與預設尺寸。
+  - **專輯封面搜尋設定 (Artwork)**：搜尋檔名遮罩、目錄搜尋順序、內嵌優先權與快取尺寸。
+  - **桌面浮動通知設定 (OSD Notifications)**：通知樣式、停留時間、Y 軸偏移定位與字型大小。
+- ⚡ **即時熱重載與記憶體安全架構 (Hot-Reload & Crash-Free Teardown)**
+  - 匯入新版面**無需重啟播放器**，主畫面即時無縫替換生效。
+  - 內建非同步延遲派發機制，徹底解決 GTK 模態對話框（Modal Dialog）銷毀與全域視窗樹重構間的競爭條件。
+  - 內建**多層分割器遞迴初始化（Recursive Splitter Init）**，無論多複雜的巢狀分割面板，匯入後比例與尺寸皆 100% 精準復原，杜絕版面拉伸變形。
+
+---
+
+## 📑 播放清單批次匯出與匯入 (Export & Import All Playlists)
+
+為了方便在不同電腦或多個桌面環境間同步音樂清單，專案內建了 **所有播放清單批次管理外掛 (`export_all_playlists`)**：
+
+- 💾 **一鍵備份所有分頁清單 (One-Click Backup All Tabs)**
+  告別單一清單逐一手動另存的繁瑣流程，一鍵即可將當前開啟的所有播放清單完整導出。
+- 📄 **雙重檔案格式支援 (Dual Format Support)**
+  - **標準 EXTM3U Bundle (`.m3u8` / `.m3u`)**：符合廣泛音樂播放器規範，使用 `#PLAYLIST:清單名稱` 分隔標記多個分頁，保留曲目詳細路徑與資訊。
+  - **結構化 JSON (`.json`)**：精準保存分頁清單順序、分頁名稱、歌曲 URI 與絕對路徑，適合備份與腳本自動化處理。
+- 📥 **智慧批次還原 (Smart Batch Import)**
+  選取備份檔案後自動還原所有分頁標籤與曲目內容，具備分頁名稱查重機制，絕不重複覆蓋現有清單。
+
+---
+
 ## 🎮 操作方式 (Controls & Navigation)
 
 | 操作方式 | 功能說明 |
@@ -151,17 +192,17 @@ deadbeef-coverflow
 
 ### 方法二：使用獨立腳本編譯外掛（適用現有 DeaDBeeF）
 
-若您的系統上已經安裝了現有的 DeaDBeeF（例如透過 PPA、APT 或 Tarball 安裝），無需重新編譯整套播放器核心，只要使用獨立腳本編譯 Cover Flow 與 Notify 外掛本體即可：
+若您的系統上已經安裝了現有的 DeaDBeeF（例如透過 PPA、APT 或 Tarball 安裝），無需重新編譯整套播放器核心，只要使用獨立腳本編譯本專案的外掛套件（Cover Flow、Video Player、OSD Notify、版面與設定管理員、播放清單匯出入外掛）即可：
 
 #### 1. 安裝編譯相依套件
 ```bash
 sudo apt update
-sudo apt install -y build-essential pkg-config libgtk-3-dev libepoxy-dev libdbus-1-dev libx11-dev libgdk-pixbuf2.0-dev
+sudo apt install -y build-essential pkg-config libgtk-3-dev libepoxy-dev libdbus-1-dev libx11-dev libgdk-pixbuf2.0-dev libmpv-dev
 ```
 
 #### 2. 執行獨立編譯腳本
 ```bash
-# 一鍵編譯 Cover Flow 與 Notify 外掛並自動安裝至當前使用者的外掛目錄 (~/.local/lib/deadbeef)
+# 一鍵編譯全部外掛並自動安裝至當前使用者的外掛目錄 (~/.local/lib/deadbeef)
 ./build_plugin.sh
 ```
 
@@ -230,6 +271,29 @@ sudo make install
    - **互動進度條 (Seek Bar)**：拖曳或點擊進度條即時跳轉時間，並具備即時播放時間與總時長顯示 (`MM:SS / MM:SS`)。
    - **沉浸式全螢幕 (Fullscreen Mode)**：點選全螢幕按鈕、按 `F11`/`F` 或雙擊畫面即可切換全螢幕；播放時靜止 2.5 秒自動隱藏游標與控制列，滑鼠晃動即刻喚醒。
    - **快速還原嵌入 (Dock)**：點擊還原按鈕 (⤓)、按 `Esc` 或直接關閉獨立視窗，視訊將無縫還原嵌入回主視窗。
+
+### 匯出與匯入版面與外掛設定 (Layout & Settings Manager)：
+1. **匯出版面與外掛設定**：
+   - 點選頂部主選單 **檔案 (File)** 或 **檢視 (View)** -> **匯出版面與外掛設定 (Export Layout & Settings...)**。
+   - 在彈出視窗中勾選欲備份的項目（設計模式版面、色彩主題、欄位清單、Cover Flow 設定、Video 播放器設定等）。
+   - 點選「下一步：儲存檔案...」，指定儲存路徑與檔名（預設為 `.ddblayout` 格式）。
+2. **匯入版面與外掛設定**：
+   - 點選頂部主選單 **檔案 (File)** 或 **檢視 (View)** -> **匯入版面與外掛設定 (Import Layout & Settings...)**。
+   - 選擇要載入的 `.ddblayout` 或 `.json` 設定檔。
+   - 檢視檔案內含的可用項目，勾選希望套用的項目。
+   - 點擊「確認套用 (Apply)」，主畫面將即時熱重載（Hot-Reload）套用全新版面架構，完全無須重啟！
+
+### 匯出與匯入所有播放清單 (All Playlists)：
+1. **一鍵匯出所有播放清單**：
+   - 點選頂部主選單 **檔案 (File)** -> **匯出所有播放清單 (Export All Playlists...)**。
+   - 選擇存檔格式：
+     - **標準 EXTM3U Bundle (`.m3u8`)**：相容性最佳，可在各播放器間無縫遷移。
+     - **結構化 JSON (`.json`)**：保存最完整的曲目路徑與結構資訊。
+   - 點擊「儲存」，一次性將所有已開啟的分頁清單完整導出。
+2. **批次匯入播放清單**：
+   - 點選頂部主選單 **檔案 (File)** -> **匯入播放清單 (Import Playlists...)**。
+   - 選取先前匯出的 `.m3u8` 或 `.json` 清單檔，點擊「開啟」。
+   - 所有播放分頁與曲目清單將自動建立並還原至介面中。
 
 ---
 

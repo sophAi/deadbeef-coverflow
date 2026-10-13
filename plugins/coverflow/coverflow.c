@@ -418,6 +418,9 @@ on_gl_realize (GtkGLArea *area, gpointer user_data) {
 static void
 on_gl_unrealize (GtkGLArea *area, gpointer user_data) {
     w_coverflow_t *w = (w_coverflow_t *)user_data;
+    if (!w || !w->lifecycle || !w->lifecycle->alive) {
+        return;
+    }
     gtk_gl_area_make_current (area);
     gl_coverflow_cleanup (&w->gl_renderer);
     album_manager_flush_pending_deletes (&w->album_mgr);
@@ -886,6 +889,9 @@ on_key_press_event (GtkWidget *widget, GdkEventKey *event, gpointer user_data) {
 static void
 on_gl_area_destroy (GtkWidget *widget, gpointer user_data) {
     w_coverflow_t *w = (w_coverflow_t *)user_data;
+    if (!w || !w->lifecycle || !w->lifecycle->alive) {
+        return;
+    }
     w->tick_callback_id = 0;
     w->gl_area = NULL;
 }
@@ -954,6 +960,21 @@ w_coverflow_destroy (ddb_gtkui_widget_t *base) {
     if (w->tick_callback_id && w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
         gtk_widget_remove_tick_callback (w->gl_area, w->tick_callback_id);
         w->tick_callback_id = 0;
+    }
+
+    /* Clean up OpenGL resources safely while w is still valid and disconnect signals */
+    if (w->gl_area && GTK_IS_WIDGET (w->gl_area)) {
+        if (gtk_widget_get_realized (w->gl_area)) {
+            gtk_gl_area_make_current (GTK_GL_AREA (w->gl_area));
+            gl_coverflow_cleanup (&w->gl_renderer);
+            album_manager_flush_pending_deletes (&w->album_mgr);
+            album_manager_free_textures (&w->album_mgr);
+            album_manager_flush_pending_deletes (&w->album_mgr);
+        }
+        g_signal_handlers_disconnect_by_data (w->gl_area, w);
+    }
+    if (w->container && GTK_IS_WIDGET (w->container)) {
+        g_signal_handlers_disconnect_by_data (w->container, w);
     }
 
     if (w->artwork_plugin) {
